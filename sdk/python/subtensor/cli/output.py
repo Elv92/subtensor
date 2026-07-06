@@ -204,6 +204,14 @@ class Output:
         if status == "executed":
             self._out.print("[green]multisig executed[/green] — no further approvals needed.")
             return
+        if status == "submitted":
+            self._out.print(
+                "[yellow]multisig approval submitted[/yellow] — co-signer details not ready yet."
+            )
+            hint = followup.get("decode_hint")
+            if hint:
+                self._out.print(f"[dim]{hint}[/dim]")
+            return
 
         threshold = followup.get("threshold")
         approvals = followup.get("approvals")
@@ -218,8 +226,18 @@ class Output:
             "timepoint": followup.get("timepoint_display"),
             "multisig": followup.get("multisig_address"),
         }
+        if followup.get("target"):
+            fields["target"] = followup.get("target") + (
+                " via Sudo.sudo" if followup.get("sudo") else ""
+            )
         if followup.get("multisig_preset"):
             fields["preset"] = followup["multisig_preset"]
+        approval_labels = followup.get("approval_labels") or followup.get("approvals_so_far") or []
+        if approval_labels:
+            fields["approved_by"] = ", ".join(str(a) for a in approval_labels)
+        remaining_labels = followup.get("remaining_labels") or []
+        if remaining_labels:
+            fields["needs"] = ", ".join(str(a) for a in remaining_labels)
         width = max((len(k) for k in fields), default=0)
         for key, value in fields.items():
             if value is not None:
@@ -227,9 +245,13 @@ class Output:
 
         commands = followup.get("co_signer_commands") or []
         if not commands:
+            hint = followup.get("decode_hint")
+            if hint:
+                self._out.print()
+                self._out.print(f"[dim]{hint}[/dim]")
             return
         self._out.print()
-        self._out.print("[bold]Co-signer commands[/bold] (same call; swap -w for each signer):")
+        self._out.print("[bold]Co-signer commands[/bold] (portable; no shared multisig preset needed):")
         for entry in commands:
             label = entry.get("label") or entry.get("ss58")
             self._out.print(f"\n  [cyan]{label}[/cyan]:")
@@ -239,6 +261,23 @@ class Output:
         self._out.print(
             "[dim]Add --macos-password or --keychain-password if the co-signer uses them.[/dim]"
         )
+
+    def pending_multisigs(self, records: list[dict[str, Any]], *, title: str) -> None:
+        """Render one or more pending multisig operations."""
+        if self.quiet:
+            return
+        if self.json_mode:
+            self._json({"pending_multisigs": records, "count": len(records)})
+            return
+        if not records:
+            self._out.print("[dim]No pending multisig operations.[/dim]")
+            return
+        self._out.print(f"[bold]{title}[/bold] ({len(records)} pending)")
+        for index, followup in enumerate(records, start=1):
+            if index > 1:
+                self._out.print()
+                self._out.print("[dim]" + ("─" * 60) + "[/dim]")
+            self.multisig_followup(followup)
 
     def result(self, result: ExtrinsicResult, success_message: str) -> bool:
         """Render the outcome of a submitted extrinsic. Returns ``result.success``.
@@ -264,5 +303,11 @@ class Output:
             if followup:
                 self.multisig_followup(followup)
         else:
-            self._err.print(f"[red]failed:[/red] {result.message}")
+            self._print_failure(result)
         return result.success
+
+    def _print_failure(self, result: ExtrinsicResult) -> None:
+        message = result.error.message if result.error else result.message
+        self._err.print(f"[red]failed:[/red] {message}")
+        if result.error is not None:
+            self._err.print(f"  [dim]hint:[/dim] {result.error.remediation}")

@@ -70,6 +70,54 @@ _SPECS = [
             help="Unlock encrypted coldkeys from the macOS Keychain (see wallet keychain save).",
         ),
     ),
+    (
+        "signer_backend",
+        Optional[str],
+        typer.Option(
+            None,
+            "--signer",
+            help="Signing backend: wallet (default) or extension.",
+        ),
+    ),
+    (
+        "signer_address",
+        Optional[str],
+        typer.Option(
+            None,
+            "--signer-address",
+            envvar="BT_SIGNER_ADDRESS",
+            help="Extension account ss58 address (optional; prompts when omitted).",
+        ),
+    ),
+    (
+        "extension_source",
+        Optional[str],
+        typer.Option(
+            None,
+            "--extension-source",
+            help="Filter extension accounts by source (e.g. talisman, polkadot-js).",
+        ),
+    ),
+    (
+        "extension_browser",
+        Optional[str],
+        typer.Option(
+            None,
+            "--extension-browser",
+            envvar="BT_EXTENSION_BROWSER",
+            help="Browser for the bridge page: firefox, chrome, or an app name.",
+        ),
+    ),
+    (
+        "extension_bridge_url",
+        Optional[str],
+        typer.Option(
+            None,
+            "--extension-bridge",
+            envvar="BT_EXTENSION_BRIDGE",
+            help="Extension bridge WebSocket URL.",
+        ),
+    ),
 ]
 
 
@@ -106,6 +154,16 @@ def apply(ctx: typer.Context, kwargs: dict[str, Any]) -> None:
         obj.macos_password = True
     if kwargs.pop("keychain_password", False):
         obj.keychain_password = True
+    if v := kwargs.pop("signer_backend", None):
+        obj.signer_backend = v
+    if v := kwargs.pop("signer_address", None):
+        obj.signer_address = v
+    if v := kwargs.pop("extension_source", None):
+        obj.extension_source = v
+    if v := kwargs.pop("extension_browser", None):
+        obj.extension_browser = v
+    if v := kwargs.pop("extension_bridge_url", None):
+        obj.extension_bridge_url = v
 
 
 def with_globals(fn: Callable) -> Callable:

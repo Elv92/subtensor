@@ -49,6 +49,7 @@ from .errors import (
     BlockNotFound,
     StateDiscardedError,
     StorageFunctionNotFound,
+    format_rpc_error,
 )
 from .protocols import Keypair
 from .types import (
@@ -2710,11 +2711,12 @@ class AsyncSubstrateInterface(SubstrateMixin):
                                         )
                                         subscription_added = True
                                     except KeyError:
-                                        logger.error(
-                                            f"Error received from subtensor for {item_id}: {response}\n"
-                                            f"Currently received responses: {request_manager.get_results()}"
+                                        logger.debug(
+                                            "RPC error for %s: %s",
+                                            item_id,
+                                            format_rpc_error(response),
                                         )
-                                        raise SubstrateRequestException(str(response))
+                                        raise SubstrateRequestException(response)
                                 (
                                     decoded_response,
                                     complete,
@@ -3233,23 +3235,49 @@ class AsyncSubstrateInterface(SubstrateMixin):
                 signature_version = keypair.crypto_type
 
         else:
-            # Create signature payload
-            signature_payload = await self.generate_signature_payload(
-                call=call,
-                era=era,
-                nonce=nonce,
-                tip=tip,
-                tip_asset_id=tip_asset_id,
-                runtime=runtime,
-            )
+            sign_extrinsic_payload = getattr(keypair, "sign_extrinsic_payload", None)
+            if sign_extrinsic_payload is not None:
+                from ..extension.payload import build_signer_payload_json
 
-            # Set Signature version to crypto type of keypair
-            signature_version = keypair.crypto_type
+                payload_json = await build_signer_payload_json(
+                    self,
+                    call=call,
+                    address=keypair.ss58_address,
+                    era=era,
+                    nonce=nonce,
+                    tip=tip,
+                    tip_asset_id=tip_asset_id,
+                )
+                result = sign_extrinsic_payload(payload_json)
+                if inspect.isawaitable(result):
+                    result = await result
+                signature_hex = result.get("signature") if isinstance(result, dict) else None
+                if not isinstance(signature_hex, str):
+                    raise ValueError("extension signer did not return a signature")
+                signature = bytes.fromhex(signature_hex.removeprefix("0x"))
+                if len(signature) == 65:
+                    signature_version = signature[0]
+                    signature = signature[1:]
+                else:
+                    signature_version = keypair.crypto_type
+            else:
+                # Create signature payload
+                signature_payload = await self.generate_signature_payload(
+                    call=call,
+                    era=era,
+                    nonce=nonce,
+                    tip=tip,
+                    tip_asset_id=tip_asset_id,
+                    runtime=runtime,
+                )
 
-            # Sign payload
-            signature = keypair.sign(signature_payload.data)  # type: ignore[assignment]
-            if inspect.isawaitable(signature):
-                signature = await signature
+                # Set Signature version to crypto type of keypair
+                signature_version = keypair.crypto_type
+
+                # Sign payload
+                signature = keypair.sign(signature_payload.data)  # type: ignore[assignment]
+                if inspect.isawaitable(signature):
+                    signature = await signature
 
         assert isinstance(signature, bytes)
 
@@ -4171,43 +4199,24 @@ class AsyncSubstrateInterface(SubstrateMixin):
         else:
             maybe_timepoint = None
 
-        # Compose 'as_multi' when final, 'approve_as_multi' otherwise
-        if (
-            multisig_details
-            and len(multisig_details["approvals"]) + 1 == multisig_account.threshold
-        ):
-            multi_sig_call = await self.compose_call(
-                "Multisig",
-                "as_multi",
-                {
-                    "other_signatories": [
-                        s
-                        for s in multisig_account.signatories
-                        if s != f"0x{keypair.public_key.hex()}"  # type: ignore[union-attr]
-                    ],
-                    "threshold": multisig_account.threshold,
-                    "maybe_timepoint": maybe_timepoint,
-                    "call": call,
-                    "store_call": False,
-                    "max_weight": max_weight,
-                },
-            )
-        else:
-            multi_sig_call = await self.compose_call(
-                "Multisig",
-                "approve_as_multi",
-                {
-                    "other_signatories": [
-                        s
-                        for s in multisig_account.signatories
-                        if s != f"0x{keypair.public_key.hex()}"  # type: ignore[union-attr]
-                    ],
-                    "threshold": multisig_account.threshold,
-                    "maybe_timepoint": maybe_timepoint,
-                    "call_hash": call.call_hash,
-                    "max_weight": max_weight,
-                },
-            )
+        # Always use as_multi with the full call so the opening extrinsic embeds
+        # call bytes on-chain (recoverable from the timepoint block). approve_as_multi
+        # only stores the hash; finney's Multisig pallet has no Calls storage.
+        multi_sig_call = await self.compose_call(
+            "Multisig",
+            "as_multi",
+            {
+                "other_signatories": [
+                    s
+                    for s in multisig_account.signatories
+                    if s != f"0x{keypair.public_key.hex()}"  # type: ignore[union-attr]
+                ],
+                "threshold": multisig_account.threshold,
+                "maybe_timepoint": maybe_timepoint,
+                "call": call,
+                "max_weight": max_weight,
+            },
+        )
 
         return await self.create_signed_extrinsic(
             multi_sig_call,

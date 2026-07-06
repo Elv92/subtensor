@@ -151,6 +151,8 @@ def resolve_signer(
         )
     if isinstance(wallet, Signer):
         return wallet
+    if getattr(wallet, "uses_extension_signing", False):
+        return wallet
     raise TypeError(
         f"cannot sign with {type(wallet).__name__}: expected a bittensor_wallet.Wallet "
         "or an object implementing subtensor.Signer"

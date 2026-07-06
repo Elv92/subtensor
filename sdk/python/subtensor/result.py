@@ -76,6 +76,20 @@ _SUBSTRING_FALLBACK: tuple[tuple[str, ErrorCode], ...] = (
     ("balance too low", ErrorCode.INSUFFICIENT_BALANCE),
     ("rate limit", ErrorCode.RATE_LIMITED),
     ("too fast", ErrorCode.RATE_LIMITED),
+    ("bad signature", ErrorCode.INVALID_ARGUMENT),
+    ("invalid transaction", ErrorCode.INVALID_ARGUMENT),
+)
+
+_HINT_OVERRIDES: tuple[tuple[str, str], ...] = (
+    (
+        "bad signature",
+        "The signature did not match the extrinsic. With --signer extension, retry the command; "
+        "if it keeps failing, use a local wallet or file a bug.",
+    ),
+    (
+        "invalid transaction",
+        "The node rejected the extrinsic before inclusion. Check the detail line above.",
+    ),
 )
 
 
@@ -111,7 +125,17 @@ class ChainError(BittensorError):
 
     @property
     def remediation(self) -> str:
+        haystack = self.message.lower()
+        for needle, hint in _HINT_OVERRIDES:
+            if needle in haystack:
+                return hint
         return _REMEDIATION[self.code]
+
+
+def chain_error_from_substrate_request(error: Exception) -> ChainError:
+    """Build a ChainError from a transport-layer request failure."""
+    message = str(error)
+    return ChainError(message, code=classify_error(message))
 
     def to_dict(self) -> dict[str, Any]:
         return {

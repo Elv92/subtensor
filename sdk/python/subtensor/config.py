@@ -11,6 +11,7 @@ DEFAULT_CONFIG_PATH = Path.home() / ".bittensor" / "subtensor.json"
 DEFAULT_PROXIES_PATH = Path.home() / ".bittensor" / "subtensor_proxies.json"
 DEFAULT_ADDRESSES_PATH = Path.home() / ".bittensor" / "subtensor_addresses.json"
 DEFAULT_MULTISIGS_PATH = Path.home() / ".bittensor" / "subtensor_multisigs.json"
+DEFAULT_MULTISIG_CACHE_PATH = Path.home() / ".bittensor" / "subtensor_multisig_cache.json"
 
 # Settable keys and the type each value coerces to.
 SETTABLE: dict[str, type] = {
@@ -20,6 +21,8 @@ SETTABLE: dict[str, type] = {
     "wallet_path": str,
     "json": bool,
     "quiet": bool,
+    "signer_address": str,
+    "extension_browser": str,
 }
 
 
@@ -258,3 +261,38 @@ def remove_multisig(name: str) -> bool:
     existed = len(filtered) != len(entries)
     save_multisigs(filtered)
     return existed
+
+
+def multisig_cache_path() -> Path:
+    return Path(os.getenv("SUBTENSOR_MULTISIG_CACHE") or DEFAULT_MULTISIG_CACHE_PATH)
+
+
+def load_multisig_cache() -> dict[str, Any]:
+    path = multisig_cache_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_multisig_cache(data: dict[str, Any]) -> Path:
+    path = multisig_cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(dict(sorted(data.items())), indent=2) + "\n")
+    return path
+
+
+def get_multisig_cache(call_hash: str) -> Optional[dict[str, Any]]:
+    key = call_hash if call_hash.startswith("0x") else "0x" + call_hash
+    entry = load_multisig_cache().get(key)
+    return entry if isinstance(entry, dict) else None
+
+
+def save_multisig_cache_entry(call_hash: str, entry: dict[str, Any]) -> None:
+    key = call_hash if call_hash.startswith("0x") else "0x" + call_hash
+    data = load_multisig_cache()
+    data[key] = entry
+    save_multisig_cache(data)

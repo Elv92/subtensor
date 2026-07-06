@@ -13,7 +13,7 @@ from typing import Any, AsyncIterator, Optional
 from ._transport import AsyncSubstrateInterface
 from ._transport.errors import SubstrateRequestException
 from .balance import Balance
-from .result import ChainError, ConnectionNotReady, ExtrinsicResult
+from .result import ChainError, ConnectionNotReady, ExtrinsicResult, chain_error_from_substrate_request
 from .settings import DEFAULT_ERA_PERIOD, SS58_FORMAT, TYPE_REGISTRY
 
 
@@ -269,10 +269,11 @@ class Substrate:
             substrate.clear_nonce_cache_for_account(keypair.ss58_address)
             if not isinstance(error, SubstrateRequestException):
                 raise ChainError(str(error)) from error
+            chain_error = chain_error_from_substrate_request(error)
             return ExtrinsicResult(
                 success=False,
-                message=str(error),
-                error=ChainError(str(error)),
+                message=chain_error.message,
+                error=chain_error,
             )
 
         return await self._result_from_receipt(receipt, wait_for_inclusion or wait_for_finalization)
@@ -301,7 +302,12 @@ class Substrate:
             self.raw.clear_nonce_cache_for_account(keypair.ss58_address)
             if not isinstance(error, SubstrateRequestException):
                 raise ChainError(str(error)) from error
-            return ExtrinsicResult(success=False, message=str(error), error=ChainError(str(error)))
+            chain_error = chain_error_from_substrate_request(error)
+            return ExtrinsicResult(
+                success=False,
+                message=chain_error.message,
+                error=chain_error,
+            )
 
         return await self._result_from_receipt(receipt, wait_for_inclusion or wait_for_finalization)
 

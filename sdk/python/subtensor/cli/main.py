@@ -26,6 +26,7 @@ from .commands import (
     config,
     crowd,
     deriv,
+    extension,
     liquidity,
     lock,
     proxy,
@@ -50,6 +51,7 @@ app = typer.Typer(
 
 # Hand-written command groups
 app.add_typer(wallet.app, name="wallet")
+app.add_typer(extension.app, name="extension")
 app.add_typer(balance.app, name="balance")
 app.add_typer(stake.app, name="stake")
 app.add_typer(subnets.app, name="subnets")
@@ -119,6 +121,34 @@ def main_callback(
     quiet: bool = typer.Option(
         config_default("quiet", False), "--quiet", "-q", help="Suppress informational output."
     ),
+    signer_backend: Optional[str] = typer.Option(
+        None,
+        "--signer",
+        help="Signing backend: wallet (default) or extension.",
+    ),
+    signer_address: Optional[str] = typer.Option(
+        config_default("signer_address"),
+        "--signer-address",
+        envvar="BT_SIGNER_ADDRESS",
+        help="Extension account ss58 address (optional; prompts when omitted).",
+    ),
+    extension_source: Optional[str] = typer.Option(
+        None,
+        "--extension-source",
+        help="Filter extension accounts by source (e.g. talisman, polkadot-js).",
+    ),
+    extension_browser: Optional[str] = typer.Option(
+        config_default("extension_browser"),
+        "--extension-browser",
+        envvar="BT_EXTENSION_BROWSER",
+        help="Browser for the bridge page: firefox, chrome, or an app name.",
+    ),
+    extension_bridge_url: Optional[str] = typer.Option(
+        None,
+        "--extension-bridge",
+        envvar="BT_EXTENSION_BRIDGE",
+        help="Extension bridge WebSocket URL.",
+    ),
     _v: Optional[bool] = typer.Option(
         None, "--version", callback=_version, is_eager=True, help="Show version and exit."
     ),
@@ -131,6 +161,11 @@ def main_callback(
         assume_yes=assume_yes,
         dry_run=dry_run,
         output=Output(json_mode=json_output, quiet=quiet),
+        signer_backend=signer_backend,
+        signer_address=signer_address,
+        extension_source=extension_source,
+        extension_browser=extension_browser,
+        extension_bridge_url=extension_bridge_url,
     )
 
 

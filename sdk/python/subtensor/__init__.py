@@ -36,6 +36,17 @@ from .result import (
     PolicyError,
 )
 from .signing import Signer, WalletSigner, public_view, resolve_signer
+from .extension import (
+    BridgeClient,
+    BridgeError,
+    BridgeServer,
+    ExtensionAccount,
+    ExtensionSigner,
+    connect_extension_signer,
+    ensure_bridge,
+    run_bridge,
+    stop_bridge_daemon,
+)
 from .wallets import (
     CRYPTO_ED25519,
     CRYPTO_SR25519,
@@ -87,6 +98,15 @@ __all__ = [
     "WalletSigner",
     "public_view",
     "resolve_signer",
+    "BridgeClient",
+    "BridgeError",
+    "BridgeServer",
+    "ExtensionAccount",
+    "ExtensionSigner",
+    "connect_extension_signer",
+    "ensure_bridge",
+    "run_bridge",
+    "stop_bridge_daemon",
     "CRYPTO_ED25519",
     "CRYPTO_SR25519",
     "DEFAULT_CRYPTO_TYPE",
