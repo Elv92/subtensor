@@ -130,7 +130,7 @@ def call(
     multisig: Optional[str] = typer.Option(
         None,
         "--multisig",
-        help="Named signer set from `subtensor config add-multisig` (replaces inline flags).",
+        help="Named multisig wallet (same name as -w); defaults to -w when saved.",
     ),
     multisig_threshold: Optional[int] = typer.Option(
         None,
@@ -162,6 +162,7 @@ def call(
         signatories=signatories,
         other_signatories=other_signatories,
         signer=signer,
+        wallet_default=app_ctx.wallet_name,
     )
     builder = _resolve_builder(target)
     params = _load_params(args, args_file)

@@ -7,7 +7,10 @@ import json
 import shlex
 from typing import Any, Optional
 
+from bittensor_wallet.utils import is_valid_ss58_address
+
 from .. import config as cfg
+from .. import wallets
 from .._generated import storage as st
 from .._transport.errors import BlockNotFound, StateDiscardedError, SubstrateRequestException
 from ..result import ExtrinsicResult
@@ -37,6 +40,30 @@ def signatory_labels(app_ctx, refs: list[str]) -> dict[str, str]:
     return labels
 
 
+def _portable_signatory_ref(ref: str) -> bool:
+    """True when ``ref`` is an explicit alias/wallet name, not a bare ss58 address."""
+    return not is_valid_ss58_address(ref)
+
+
+def _replay_wallet_label(addr_to_ref: dict[str, str], ss58: str) -> str:
+    ref = addr_to_ref.get(ss58, ss58)
+    return ref if _portable_signatory_ref(ref) else ss58
+
+
+def _replay_other_signatory_refs(
+    signatories: list[str],
+    addr_to_ref: dict[str, str],
+    co_signer_ss58: str,
+) -> Optional[list[str]]:
+    """Other signers for ``--other-signatories`` when we know explicit non-ss58 refs."""
+    others = [addr_to_ref[addr] for addr in signatories if addr != co_signer_ss58]
+    if not others:
+        return None
+    if not all(_portable_signatory_ref(ref) for ref in others):
+        return None
+    return others
+
+
 def build_replay_command(
     app_ctx,
     *,
@@ -48,6 +75,8 @@ def build_replay_command(
     signatories: list[str],
     wallet_label: str,
     signer_role: str = "coldkey",
+    preset: Optional[str] = None,
+    other_signatory_labels: Optional[list[str]] = None,
 ) -> str:
     """Build a copy-paste ``subtensor call`` command for a co-signer."""
     parts = ["subtensor"]
@@ -60,8 +89,16 @@ def build_replay_command(
         parts.append(f"--args {shlex.quote(json.dumps(params, separators=(',', ':')))}")
     if sudo:
         parts.append("--sudo")
-    parts.append(f"--multisig-threshold {threshold}")
-    parts.append(f"--signatories {shlex.quote(','.join(signatories))}")
+    if preset:
+        parts.append(f"--multisig {shlex.quote(preset)}")
+    elif other_signatory_labels:
+        parts.append(f"--multisig-threshold {threshold}")
+        parts.append(
+            f"--other-signatories {shlex.quote(','.join(other_signatory_labels))}"
+        )
+    else:
+        parts.append(f"--multisig-threshold {threshold}")
+        parts.append(f"--signatories {shlex.quote(','.join(signatories))}")
     parts.append(f"-w {shlex.quote(wallet_label)}")
     if signer_role != "coldkey":
         parts.append(f"--signer {signer_role}")
@@ -88,16 +125,20 @@ def resolve_multisig(
     signatories: Optional[str] = None,
     other_signatories: Optional[str] = None,
     signer: str = "coldkey",
+    wallet_default: Optional[str] = None,
 ) -> tuple[Optional[int], list[str], Optional[str], list[str]]:
-    """Resolve multisig settings from a preset name or inline flags."""
+    """Resolve multisig settings from a preset name, inline flags, or -w wallet name."""
     inline = threshold is not None or signatories or other_signatories
+    if not multisig_name and not inline and wallet_default and cfg.get_multisig(wallet_default):
+        multisig_name = wallet_default
     if multisig_name and inline:
         raise ValueError("use either --multisig NAME or inline multisig flags, not both")
     if multisig_name:
         entry = cfg.get_multisig(multisig_name)
         if entry is None:
             raise ValueError(
-                f"unknown multisig {multisig_name!r}; run `subtensor config multisigs`"
+                f"unknown multisig {multisig_name!r}; run `subtensor wallet make-multi -w NAME` "
+                "or `subtensor config multisigs`"
             )
         refs = list(entry["signatories"])
         return int(entry["threshold"]), _resolve_stored_signatories(app_ctx, refs), multisig_name, refs
@@ -132,6 +173,63 @@ def resolve_multisig_preset(app_ctx, name: str) -> tuple[int, list[str], list[st
     if threshold is None:
         raise ValueError(f"unknown multisig {name!r}")
     return threshold, signatories, refs
+
+
+def _soft_resolve_coldkey(app_ctx, ref: str) -> Optional[str]:
+    """Resolve a coldkey ref without exiting the CLI."""
+    if is_valid_ss58_address(ref):
+        return ref
+    booked = cfg.get_address(ref)
+    if booked:
+        return booked
+    try:
+        return wallets.open_wallet(name=ref, path=app_ctx.wallet_path).coldkeypub.ss58_address
+    except Exception:
+        return None
+
+
+async def multisig_list_records(
+    client,
+    app_ctx,
+    entries: Optional[list[dict[str, Any]]] = None,
+) -> list[dict[str, Any]]:
+    """Build wallet-list rows for saved multisig wallets."""
+    rows: list[dict[str, Any]] = []
+    for entry in entries if entries is not None else cfg.load_multisigs():
+        name = entry.get("name")
+        if not name:
+            continue
+        threshold = int(entry.get("threshold") or 0)
+        refs = list(entry.get("signatories") or [])
+        signatories = [
+            address
+            for ref in refs
+            if (address := _soft_resolve_coldkey(app_ctx, ref)) is not None
+        ]
+        signatories = list(dict.fromkeys(signatories))
+        multisig_address = None
+        if signatories and threshold >= 1:
+            try:
+                ms = await client.multisig(signatories, threshold)
+                multisig_address = ms.address
+            except Exception:
+                pass
+        signatory_rows = [
+            {"name": ref, "ss58": _soft_resolve_coldkey(app_ctx, ref)} for ref in refs
+        ]
+        rows.append(
+            {
+                "name": name,
+                "kind": "multisig",
+                "threshold": threshold,
+                "signatory_count": len(refs),
+                "ss58": multisig_address,
+                "signatories": signatory_rows,
+                "note": entry.get("note", ""),
+            }
+        )
+    rows.sort(key=lambda row: str(row["name"]).lower())
+    return rows
 
 
 def _json_friendly(value: Any) -> Any:
@@ -368,8 +466,18 @@ async def build_pending_followup(
 
     co_signer_commands = []
     if target:
+        addr_to_ref: dict[str, str] = {}
+        for index, addr in enumerate(signatories):
+            if index < len(signatory_refs):
+                addr_to_ref[addr] = signatory_refs[index]
+            else:
+                addr_to_ref[addr] = addr
         for ss58 in remaining:
             label = labels.get(ss58, ss58)
+            wallet_label = _replay_wallet_label(addr_to_ref, ss58)
+            other_labels = _replay_other_signatory_refs(signatories, addr_to_ref, ss58)
+            if other_labels is not None and not _portable_signatory_ref(wallet_label):
+                other_labels = None
             co_signer_commands.append(
                 {
                     "ss58": ss58,
@@ -382,8 +490,10 @@ async def build_pending_followup(
                         sudo=sudo,
                         threshold=threshold,
                         signatories=signatories,
-                        wallet_label=label if label != ss58 else ss58,
+                        wallet_label=wallet_label,
                         signer_role=signer_role,
+                        preset=preset,
+                        other_signatory_labels=other_labels,
                     ),
                 }
             )

@@ -18,6 +18,7 @@ from rich.tree import Tree
 
 from ..intents import Plan
 from ..result import ExtrinsicResult
+from .. import config as cfg
 
 
 class Output:
@@ -120,7 +121,7 @@ class Output:
         if count:
             suffix = "hotkey" if count == 1 else "hotkeys"
             node.append(f"  ({count} {suffix})", style="dim")
-        if ss58:
+        if ss58 and ss58 != name:
             node.append("\n")
             node.append(ss58, style="dim cyan")
         elif ss58 is None:
@@ -128,10 +129,29 @@ class Output:
             node.append("—", style="dim red")
         return node
 
-    def wallet_list(self, path: str, records: list[dict[str, Any]]) -> None:
-        """Render coldkeys and hotkeys with aligned names and ss58 addresses."""
+    @staticmethod
+    def _multisig_node(name: str, ss58: str | None, *, threshold: int, count: int) -> Text:
+        node = Text()
+        node.append(name, style="bold yellow")
+        node.append(f"  (multisig · {threshold}-of-{count})", style="dim magenta")
+        node.append("\n")
+        if ss58:
+            node.append(ss58, style="dim cyan")
+        else:
+            node.append("—", style="dim red")
+        return node
+
+    def wallet_list(
+        self,
+        path: str,
+        records: list[dict[str, Any]],
+        *,
+        multisigs: Optional[list[dict[str, Any]]] = None,
+    ) -> None:
+        """Render coldkeys, hotkeys, and saved multisig wallets."""
+        multisigs = multisigs or []
         if self.json_mode:
-            self._json(records)
+            self._json({"path": path, "coldkeys": records, "multisigs": multisigs})
             return
 
         display_path = str(Path(path).expanduser())
@@ -171,8 +191,43 @@ class Output:
 
         total_coldkeys = len(records)
         total_hotkeys = sum(len(ck.get("hotkeys", [])) for ck in records)
+        summary = f"[dim]{total_coldkeys} coldkeys  ·  {total_hotkeys} hotkeys"
+        if multisigs:
+            multisig_path = str(cfg.multisigs_path().expanduser())
+            if multisig_path.startswith(home):
+                multisig_path = "~" + multisig_path[len(home) :]
+            self._out.print()
+            self._out.print("[bold]Multisig wallets[/bold]")
+            self._out.print()
+            multi_root = Tree(f"[dim italic]{multisig_path}[/dim italic]", guide_style="bright_black")
+            for entry in multisigs:
+                branch = multi_root.add(
+                    self._multisig_node(
+                        entry["name"],
+                        entry.get("ss58"),
+                        threshold=int(entry["threshold"]),
+                        count=int(entry["signatory_count"]),
+                    )
+                )
+                for signer in entry.get("signatories", []):
+                    branch.add(
+                        self._wallet_node(
+                            signer["name"],
+                            signer.get("ss58"),
+                            name_style="yellow",
+                        )
+                    )
+                note = entry.get("note")
+                if note:
+                    branch.add(Text(note, style="dim italic"))
+            self._out.print(multi_root)
+            summary += f"  ·  {len(multisigs)} multisigs"
         self._out.print()
-        self._out.print(f"[dim]{total_coldkeys} coldkeys  ·  {total_hotkeys} hotkeys[/dim]")
+        self._out.print(summary + "[/dim]")
+
+    def _print_copyable(self, text: str, *, prefix: str = "    ") -> None:
+        """Print a single line without terminal wrapping so it can be copied as-is."""
+        self._out.print(Text(prefix + text, overflow="ignore", no_wrap=True), soft_wrap=False)
 
     def plan(self, plan: Plan) -> None:
         """Render a dry-run plan (fee, effects, warnings, policy)."""
@@ -251,12 +306,11 @@ class Output:
                 self._out.print(f"[dim]{hint}[/dim]")
             return
         self._out.print()
-        self._out.print("[bold]Co-signer commands[/bold] (portable; no shared multisig preset needed):")
+        self._out.print("[bold]Co-signer commands[/bold] (one line each — copy and run):")
         for entry in commands:
             label = entry.get("label") or entry.get("ss58")
             self._out.print(f"\n  [cyan]{label}[/cyan]:")
-            for line in str(entry.get("command", "")).splitlines():
-                self._out.print(f"    {line}")
+            self._print_copyable(str(entry.get("command", "")))
         self._out.print()
         self._out.print(
             "[dim]Add --macos-password or --keychain-password if the co-signer uses them.[/dim]"

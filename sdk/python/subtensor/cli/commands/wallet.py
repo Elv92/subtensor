@@ -9,7 +9,9 @@ from typing import Optional
 import typer
 
 from ... import macos_password
+from ... import config as cfg
 from ... import wallets
+from ..._generated import storage
 from ...intents import (
     AnnounceColdkeySwap,
     AssociateHotkey,
@@ -481,7 +483,7 @@ def show_wallet(ctx: typer.Context):
 @app.command("list")
 @with_globals
 def list_wallets(ctx: typer.Context):
-    """List wallets on disk as a tree of coldkeys, hotkeys, and ss58 addresses."""
+    """List wallets on disk and saved multisig wallets."""
     app_ctx: AppContext = ctx_of(ctx)
     coldkeys = wallets.list_wallets_detailed(app_ctx.wallet_path)
     records = [
@@ -500,7 +502,13 @@ def list_wallets(ctx: typer.Context):
         }
         for ck in coldkeys
     ]
-    app_ctx.output.wallet_list(app_ctx.wallet_path, records)
+    multisig_entries = cfg.load_multisigs()
+    multisigs = (
+        app_ctx.run(lambda client: ms_helpers.multisig_list_records(client, app_ctx))
+        if multisig_entries
+        else []
+    )
+    app_ctx.output.wallet_list(app_ctx.wallet_path, records, multisigs=multisigs)
 
 
 @app.command("balance")
@@ -677,6 +685,85 @@ def swap_coldkey(
     app_ctx.submit(SwapColdkeyAnnounced(new_coldkey_ss58=new_coldkey))
 
 
+@app.command("make-multi")
+@with_globals
+def wallet_make_multi(
+    ctx: typer.Context,
+    threshold: int = typer.Option(..., "--threshold", min=1),
+    signatories: Optional[str] = typer.Option(
+        None,
+        "--signatories",
+        help="Full signer set: ss58, address-book names, or wallet names.",
+    ),
+    signatory: Optional[list[str]] = typer.Option(
+        None, "--signatory", help="One signatory ref; repeat for each member."
+    ),
+    note: str = typer.Option("", "--note"),
+    overwrite: bool = typer.Option(False, "--overwrite"),
+):
+    """Save a multisig signer set under the -w wallet name for pending and call."""
+    app_ctx: AppContext = ctx_of(ctx)
+    refs: list[str] = []
+    if signatories:
+        refs.extend(part.strip() for part in signatories.split(",") if part.strip())
+    if signatory:
+        refs.extend(signatory)
+    refs = list(dict.fromkeys(refs))
+    if not refs:
+        app_ctx.output.error("pass --signatories or one or more --signatory")
+        raise typer.Exit(1)
+    try:
+        resolved = [app_ctx.resolve_address("coldkey_ss58", ref) for ref in refs]
+    except typer.Exit:
+        raise
+    resolved = list(dict.fromkeys(resolved))
+    if threshold > len(resolved):
+        app_ctx.output.error(f"threshold {threshold} exceeds {len(resolved)} signatories")
+        raise typer.Exit(1)
+    if cfg.get_multisig(app_ctx.wallet_name) and not overwrite:
+        app_ctx.output.error(
+            f"multisig wallet {app_ctx.wallet_name!r} already exists; pass --overwrite"
+        )
+        raise typer.Exit(1)
+    try:
+        entry = cfg.add_multisig(
+            {
+                "name": app_ctx.wallet_name,
+                "threshold": threshold,
+                "signatories": refs,
+                "note": note,
+            }
+        )
+    except ValueError as error:
+        app_ctx.output.error(str(error))
+        raise typer.Exit(1)
+
+    async def derive(client):
+        ms = await client.multisig(resolved, threshold)
+        sudo_key = await client.query(storage.Sudo.Key)
+        return ms.address, sudo_key
+
+    address, sudo_key = app_ctx.run(derive)
+    coldkey_exists = False
+    try:
+        wallets.open_wallet(name=app_ctx.wallet_name, path=app_ctx.wallet_path)
+        coldkey_exists = True
+    except Exception:
+        pass
+    app_ctx.output.detail(
+        "saved multisig wallet",
+        {
+            "wallet": app_ctx.wallet_name,
+            "entry": entry,
+            "path": str(cfg.multisigs_path()),
+            "multisig_address": address,
+            "chain_sudo_key": sudo_key,
+            "matches_sudo": address == sudo_key,
+            "coldkey_wallet_also_exists": coldkey_exists,
+        },
+    )
+
+
 @app.command("pending")
 @with_globals
 def wallet_pending(
@@ -684,7 +771,7 @@ def wallet_pending(
     multisig: Optional[str] = typer.Option(
         None,
         "--multisig",
-        help="Named signer set from `subtensor config add-multisig`.",
+        help="Named multisig wallet (same name as -w); defaults to -w when saved.",
     ),
     multisig_threshold: Optional[int] = typer.Option(
         None,
@@ -728,13 +815,15 @@ def wallet_pending(
             signatories=signatories,
             other_signatories=other_signatories,
             signer=signer,
+            wallet_default=app_ctx.wallet_name,
         )
     except ValueError as error:
         app_ctx.output.error(str(error))
         raise typer.Exit(1)
     if threshold is None:
         app_ctx.output.error(
-            "pass --multisig NAME or --multisig-threshold with --signatories / --other-signatories"
+            f"no multisig for wallet {app_ctx.wallet_name!r}; "
+            "run `subtensor wallet make-multi -w NAME ...` or pass inline multisig flags"
         )
         raise typer.Exit(1)
 
