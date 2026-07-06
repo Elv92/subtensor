@@ -1,0 +1,7 @@
+#compdef subtensor
+
+_subtensor_completion() {
+  eval $(env _TYPER_COMPLETE_ARGS="${words[1,$CURRENT]}" _SUBTENSOR_COMPLETE=complete_zsh subtensor)
+}
+
+compdef _subtensor_completion subtensor

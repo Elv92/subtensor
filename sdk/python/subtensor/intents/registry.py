@@ -1,0 +1,52 @@
+"""Intent registry and tool manifest.
+
+Every intent registers itself here via ``@register``. Because intents are
+self-describing (schema + summary), the agent-facing tool catalog
+(``list_tools``/``build``) is generated from this registry rather than
+hand-maintained, so it can never drift from the actual operations.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Type
+
+from .base import Intent
+
+REGISTRY: dict[str, Type[Intent]] = {}
+
+
+def register(cls: Type[Intent]) -> Type[Intent]:
+    """Class decorator: add an intent to the registry keyed by its ``op``.
+
+    Building the schema here fails registration (import time) if a field has an
+    annotation the schema generator can't map, rather than shipping a wrong schema.
+    """
+    if cls.op in REGISTRY:
+        raise ValueError(f"Duplicate intent op: {cls.op}")
+    cls.json_schema()
+    REGISTRY[cls.op] = cls
+    return cls
+
+
+def build(op: str, args: dict[str, Any]) -> Intent:
+    """Construct an intent from an op name and a plain dict of arguments."""
+    try:
+        cls = REGISTRY[op]
+    except KeyError:
+        raise ValueError(f"Unknown op {op!r}. Known ops: {sorted(REGISTRY)}") from None
+    return cls.from_args(args)
+
+
+def list_tools() -> list[dict[str, Any]]:
+    """Machine-readable catalog of every operation, for agent/tool discovery."""
+    tools = []
+    for op, cls in sorted(REGISTRY.items()):
+        tools.append(
+            {
+                "name": op,
+                "description": (cls.__doc__ or "").strip().split("\n")[0],
+                "signer": cls.signer,
+                "input_schema": cls.json_schema(),
+            }
+        )
+    return tools
