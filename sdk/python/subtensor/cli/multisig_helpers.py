@@ -69,20 +69,69 @@ def build_replay_command(
     return " ".join(parts)
 
 
-def resolve_multisig_preset(app_ctx, name: str) -> tuple[int, list[str], list[str]]:
-    """Return threshold, resolved ss58 signatories, and preset refs."""
-    entry = cfg.get_multisig(name)
-    if entry is None:
-        raise ValueError(f"unknown multisig {name!r}")
-    refs = list(entry["signatories"])
-    signatories: list[str] = []
+def _resolve_stored_signatories(app_ctx, refs: list[str]) -> list[str]:
+    """Resolve a saved multisig signer list (ss58, book names, or wallets)."""
+    resolved: list[str] = []
     for ref in refs:
         address = app_ctx.resolve_address("coldkey_ss58", ref)
         if not address:
             raise ValueError(f"cannot resolve signatory {ref!r} in multisig preset")
-        signatories.append(address)
-    signatories = list(dict.fromkeys(signatories))
-    return int(entry["threshold"]), signatories, refs
+        resolved.append(address)
+    return list(dict.fromkeys(resolved))
+
+
+def resolve_multisig(
+    app_ctx,
+    *,
+    multisig_name: Optional[str] = None,
+    threshold: Optional[int] = None,
+    signatories: Optional[str] = None,
+    other_signatories: Optional[str] = None,
+    signer: str = "coldkey",
+) -> tuple[Optional[int], list[str], Optional[str], list[str]]:
+    """Resolve multisig settings from a preset name or inline flags."""
+    inline = threshold is not None or signatories or other_signatories
+    if multisig_name and inline:
+        raise ValueError("use either --multisig NAME or inline multisig flags, not both")
+    if multisig_name:
+        entry = cfg.get_multisig(multisig_name)
+        if entry is None:
+            raise ValueError(
+                f"unknown multisig {multisig_name!r}; run `subtensor config multisigs`"
+            )
+        refs = list(entry["signatories"])
+        return int(entry["threshold"]), _resolve_stored_signatories(app_ctx, refs), multisig_name, refs
+    if threshold is None:
+        return None, [], None, []
+    if threshold < 1:
+        raise ValueError("threshold must be >= 1")
+    if signatories and other_signatories:
+        raise ValueError("pass either --signatories or --other-signatories, not both")
+    if signatories:
+        refs = [part.strip() for part in signatories.split(",") if part.strip()]
+        sigs = app_ctx.resolve_signatory_list(signatories)
+    elif other_signatories:
+        refs = [part.strip() for part in other_signatories.split(",") if part.strip()]
+        sigs = app_ctx.resolve_signatory_list(other_signatories)
+        wallet = app_ctx.wallet()
+        self_addr = (
+            wallet.coldkeypub.ss58_address if signer == "coldkey" else wallet.hotkey.ss58_address
+        )
+        sigs = list(dict.fromkeys(sigs + [self_addr]))
+        refs = refs + [app_ctx.wallet_name]
+    else:
+        raise ValueError(
+            "with --multisig-threshold, pass --signatories or --other-signatories"
+        )
+    return threshold, sigs, None, refs
+
+
+def resolve_multisig_preset(app_ctx, name: str) -> tuple[int, list[str], list[str]]:
+    """Return threshold, resolved ss58 signatories, and preset refs."""
+    threshold, signatories, _, refs = resolve_multisig(app_ctx, multisig_name=name)
+    if threshold is None:
+        raise ValueError(f"unknown multisig {name!r}")
+    return threshold, signatories, refs
 
 
 def _json_friendly(value: Any) -> Any:
@@ -457,7 +506,7 @@ async def multisig_followup_from_composed(
             )
             followup["decode_hint"] = (
                 "Approval recorded on-chain but pending state is not visible yet. "
-                "Run `subtensor sudo pending` to inspect co-signer commands."
+                "Run `subtensor wallet pending` to inspect co-signer commands."
             )
             return followup
         return {
@@ -470,7 +519,7 @@ async def multisig_followup_from_composed(
             "multisig_preset": preset,
             "decode_hint": (
                 "Approval submitted but pending state is not visible yet. "
-                "Run `subtensor sudo pending` shortly to inspect co-signer commands."
+                "Run `subtensor wallet pending` shortly to inspect co-signer commands."
             ),
         }
 

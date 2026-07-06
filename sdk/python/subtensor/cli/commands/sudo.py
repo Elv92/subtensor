@@ -6,7 +6,6 @@ from typing import Optional
 
 import typer
 
-from ..._generated import storage
 from ...intents import (
     SenateVote,
     SetHyperparameter,
@@ -16,73 +15,11 @@ from ...intents import (
     StakeBurn,
     TrimSubnet,
 )
-from .. import multisig_helpers as ms_helpers
 from ..context import AppContext, address_cli_name, ctx_of, ss58_param_help
 from ..globals import with_globals
 from ..helpers import query_storage
 
 app = typer.Typer(no_args_is_help=True, help="Subnet-owner config and governance.")
-
-
-@app.command("pending")
-@with_globals
-def sudo_pending(
-    ctx: typer.Context,
-    multisig: str = typer.Option(
-        "finney-trium",
-        "--multisig",
-        help="Saved multisig preset for the chain sudo account.",
-    ),
-    call_hash: Optional[str] = typer.Option(
-        None,
-        "--call-hash",
-        help="Show one pending operation by call hash.",
-    ),
-    call_data: Optional[str] = typer.Option(
-        None,
-        "--call-data",
-        help="Scale-encoded call hex. Use when call details are not in local cache.",
-    ),
-    all_accounts: bool = typer.Option(
-        False,
-        "--all",
-        help="Show pending ops even if the preset does not match chain sudo.",
-    ),
-):
-    """List pending multisig sudo operations with approval status and co-signer commands."""
-    app_ctx: AppContext = ctx_of(ctx)
-    try:
-        threshold, signatories, signatory_refs = ms_helpers.resolve_multisig_preset(
-            app_ctx, multisig
-        )
-    except ValueError as error:
-        app_ctx.output.error(str(error))
-        raise typer.Exit(1)
-
-    async def _load(client):
-        ms = await client.multisig(signatories, threshold)
-        sudo_key = await client.query(storage.Sudo.Key)
-        records = await ms_helpers.list_pending_with_commands(
-            client,
-            app_ctx,
-            ms=ms,
-            threshold=threshold,
-            signatories=signatories,
-            signatory_refs=signatory_refs,
-            preset=multisig,
-            call_hash_filter=call_hash,
-            call_data=call_data,
-        )
-        return ms.address, sudo_key, records
-
-    address, sudo_key, records = app_ctx.run(_load)
-    if address != sudo_key and not all_accounts:
-        app_ctx.output.error(
-            f"multisig {multisig!r} address {address} does not match chain sudo {sudo_key}; "
-            "pass --all to list anyway"
-        )
-        raise typer.Exit(1)
-    app_ctx.output.pending_multisigs(records, title=f"pending sudo multisig ({multisig})")
 
 
 @app.command("set")

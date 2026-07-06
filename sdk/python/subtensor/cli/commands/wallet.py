@@ -21,6 +21,7 @@ from ...intents import (
 from ..context import AppContext, address_cli_name, ctx_of, ss58_param_help
 from ..globals import with_globals
 from ..helpers import list_coldkeys, wallet_inspect_data, wallet_overview_rows
+from .. import multisig_helpers as ms_helpers
 
 app = typer.Typer(no_args_is_help=True, help="Create and manage wallets.")
 
@@ -674,6 +675,87 @@ def swap_coldkey(
     app_ctx: AppContext = ctx_of(ctx)
     new_coldkey = app_ctx.resolve_address("coldkey_ss58", new_coldkey_ss58)
     app_ctx.submit(SwapColdkeyAnnounced(new_coldkey_ss58=new_coldkey))
+
+
+@app.command("pending")
+@with_globals
+def wallet_pending(
+    ctx: typer.Context,
+    multisig: Optional[str] = typer.Option(
+        None,
+        "--multisig",
+        help="Named signer set from `subtensor config add-multisig`.",
+    ),
+    multisig_threshold: Optional[int] = typer.Option(
+        None,
+        "--multisig-threshold",
+        help="Approvals needed before the multisig call executes.",
+    ),
+    signatories: Optional[str] = typer.Option(
+        None,
+        "--signatories",
+        help="Full signer set: ss58, address-book names, or wallet names (include yourself).",
+    ),
+    other_signatories: Optional[str] = typer.Option(
+        None,
+        "--other-signatories",
+        help="Other signers only (book names or ss58); your -w wallet coldkey is added.",
+    ),
+    signer: str = typer.Option(
+        "coldkey", "--signer", help="Which wallet key is in the signer set: 'coldkey' or 'hotkey'."
+    ),
+    call_hash: Optional[str] = typer.Option(
+        None,
+        "--call-hash",
+        help="Show one pending operation by call hash.",
+    ),
+    call_data: Optional[str] = typer.Option(
+        None,
+        "--call-data",
+        help="Scale-encoded call hex. Use when call details are not in local cache.",
+    ),
+):
+    """List pending multisig operations with approval status and co-signer commands."""
+    app_ctx: AppContext = ctx_of(ctx)
+    if signer not in ("coldkey", "hotkey"):
+        app_ctx.output.error("signer must be 'coldkey' or 'hotkey'")
+        raise typer.Exit(1)
+    try:
+        threshold, signatories_resolved, preset, signatory_refs = ms_helpers.resolve_multisig(
+            app_ctx,
+            multisig_name=multisig,
+            threshold=multisig_threshold,
+            signatories=signatories,
+            other_signatories=other_signatories,
+            signer=signer,
+        )
+    except ValueError as error:
+        app_ctx.output.error(str(error))
+        raise typer.Exit(1)
+    if threshold is None:
+        app_ctx.output.error(
+            "pass --multisig NAME or --multisig-threshold with --signatories / --other-signatories"
+        )
+        raise typer.Exit(1)
+
+    label = preset or f"{threshold}-of-{len(signatories_resolved)}"
+
+    async def _load(client):
+        ms = await client.multisig(signatories_resolved, threshold)
+        return await ms_helpers.list_pending_with_commands(
+            client,
+            app_ctx,
+            ms=ms,
+            threshold=threshold,
+            signatories=signatories_resolved,
+            signatory_refs=signatory_refs,
+            preset=preset,
+            call_hash_filter=call_hash,
+            call_data=call_data,
+        )
+
+    records = app_ctx.run(_load)
+    app_ctx.output.pending_multisigs(records, title=f"pending multisig ({label})")
 
 
 @app.command("swap-check")

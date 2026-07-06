@@ -44,7 +44,6 @@ from typing import Any, Optional
 import typer
 
 from .. import calls
-from .. import config as cfg
 from .context import ctx_of
 from .globals import with_globals
 from . import multisig_helpers as ms_helpers
@@ -105,80 +104,12 @@ def _for_display(params: dict) -> dict[str, Any]:
     return shown
 
 
-def _parse_signatory_list(app_ctx, raw: str, *, param: str) -> list[str]:
-    """Comma-separated signatories (ss58, address-book name, wallet) -> resolved addresses."""
-    try:
-        return app_ctx.resolve_signatory_list(raw)
-    except ValueError as error:
-        raise typer.BadParameter(str(error), param_hint=param)
-
-
-def _resolve_multisig(
-    app_ctx,
-    *,
-    multisig_name: Optional[str],
-    threshold: Optional[int],
-    signatories: Optional[str],
-    other_signatories: Optional[str],
-    signer: str,
-) -> tuple[Optional[int], list[str], Optional[str]]:
+def _resolve_multisig(app_ctx, **kwargs):
     """Resolve multisig settings from a preset name or inline flags."""
-    inline = threshold is not None or signatories or other_signatories
-    if multisig_name and inline:
-        raise typer.BadParameter(
-            "use either --multisig NAME or inline multisig flags, not both",
-            param_hint="--multisig",
-        )
-    if multisig_name:
-        entry = cfg.get_multisig(multisig_name)
-        if entry is None:
-            raise typer.BadParameter(
-                f"unknown multisig {multisig_name!r}; run `subtensor config multisigs`",
-                param_hint="--multisig",
-            )
-        return (
-            entry["threshold"],
-            _resolve_stored_signatories(app_ctx, entry["signatories"]),
-            multisig_name,
-        )
-    if threshold is None:
-        return None, [], None
-    if threshold < 1:
-        raise typer.BadParameter("threshold must be >= 1", param_hint="--multisig-threshold")
-    if signatories and other_signatories:
-        raise typer.BadParameter(
-            "pass either --signatories or --other-signatories, not both",
-            param_hint="--signatories",
-        )
-    if signatories:
-        sigs = _parse_signatory_list(app_ctx, signatories, param="--signatories")
-    elif other_signatories:
-        sigs = _parse_signatory_list(app_ctx, other_signatories, param="--other-signatories")
-        wallet = app_ctx.wallet()
-        self_addr = (
-            wallet.coldkeypub.ss58_address if signer == "coldkey" else wallet.hotkey.ss58_address
-        )
-        sigs = list(dict.fromkeys(sigs + [self_addr]))
-    else:
-        raise typer.BadParameter(
-            "with --multisig-threshold, pass --signatories or --other-signatories",
-            param_hint="--multisig-threshold",
-        )
-    return threshold, sigs, None
-
-
-def _resolve_stored_signatories(app_ctx, refs: list[str]) -> list[str]:
-    """Resolve a saved multisig signer list (ss58, book names, or wallets)."""
-    resolved: list[str] = []
-    for ref in refs:
-        address = app_ctx.resolve_address("coldkey_ss58", ref)
-        if not address:
-            raise typer.BadParameter(
-                f"cannot resolve signatory {ref!r} in multisig preset",
-                param_hint="--multisig",
-            )
-        resolved.append(address)
-    return list(dict.fromkeys(resolved))
+    try:
+        return ms_helpers.resolve_multisig(app_ctx, **kwargs)
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="--multisig")
 
 
 @with_globals
@@ -224,7 +155,7 @@ def call(
     app_ctx = ctx_of(ctx)
     if signer not in ("coldkey", "hotkey"):
         raise typer.BadParameter("must be 'coldkey' or 'hotkey'", param_hint="--signer")
-    threshold, sigs, preset = _resolve_multisig(
+    threshold, sigs, preset, _signatory_refs = _resolve_multisig(
         app_ctx,
         multisig_name=multisig,
         threshold=multisig_threshold,
@@ -284,16 +215,7 @@ def call(
 
     app_ctx.confirm(prompt)
     if via_multisig:
-        if preset:
-            signatory_refs = cfg.get_multisig(preset)["signatories"]
-        elif signatories:
-            signatory_refs = [part.strip() for part in signatories.split(",") if part.strip()]
-        elif other_signatories:
-            signatory_refs = [
-                part.strip() for part in other_signatories.split(",") if part.strip()
-            ] + [app_ctx.wallet_name]
-        else:
-            signatory_refs = sigs
+        signatory_refs = _signatory_refs
 
         async def _submit_multisig(client):
             ms = await client.multisig(sigs, threshold)
