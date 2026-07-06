@@ -26,6 +26,7 @@ use subtensor_runtime_common::{AlphaBalance, NetUid, TaoBalance, Token, TokenRes
 // ============================
 //	==== Benchmark Imports =====
 // ============================
+#[path = "benchmarks/benchmarks.rs"]
 mod benchmarks;
 
 // =========================
