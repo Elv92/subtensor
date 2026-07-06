@@ -37,7 +37,15 @@ class Multisig:
     _client: "Client"
     _account: Any  # transport MultiAccountId, carries the derived id
 
-    async def approve(self, call, wallet: Any, *, signer: str = "coldkey"):
+    async def approve(
+        self,
+        call,
+        wallet: Any,
+        *,
+        signer: str = "coldkey",
+        wait_for_inclusion: bool = True,
+        wait_for_finalization: bool = False,
+    ):
         """Approve ``call`` as one signatory; executes it once the threshold is met.
 
         ``call`` is a generated builder from ``subtensor.calls`` (composed
@@ -48,7 +56,13 @@ class Multisig:
         """
         composed = await self._client.compose(call)
         keypair = resolve_signer(wallet, signer)
-        return await self._client._substrate.submit_multisig(composed, keypair, self._account)
+        return await self._client._substrate.submit_multisig(
+            composed,
+            keypair,
+            self._account,
+            wait_for_inclusion=wait_for_inclusion,
+            wait_for_finalization=wait_for_finalization,
+        )
 
     def __repr__(self) -> str:
         return (

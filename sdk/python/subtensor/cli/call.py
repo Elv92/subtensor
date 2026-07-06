@@ -25,6 +25,9 @@ Then each signatory approves with the short form::
     subtensor call System.set_code --args-file runtime.json --sudo \\
       --multisig finney-sudo -w suro --yes
 
+After the first approval, the CLI prints ``call_hash``, ``call_data``, ``timepoint``,
+and copy-paste commands for each remaining co-signer.
+
 If you only know the *other* signers' addresses, pass them and your wallet is
 added automatically::
 
@@ -36,12 +39,14 @@ added automatically::
 from __future__ import annotations
 
 import json
+import shlex
 from typing import Any, Optional
 
 import typer
 
 from .. import calls
 from .. import config as cfg
+from .._generated import storage as st
 from .context import ctx_of
 from .globals import with_globals
 
@@ -177,6 +182,140 @@ def _resolve_stored_signatories(app_ctx, refs: list[str]) -> list[str]:
     return list(dict.fromkeys(resolved))
 
 
+def _hex_bytes(value: bytes | str) -> str:
+    if isinstance(value, bytes):
+        return "0x" + value.hex()
+    text = str(value)
+    return text if text.startswith("0x") else "0x" + text
+
+
+def _signatory_labels(app_ctx, refs: list[str]) -> dict[str, str]:
+    """Map ss58 addresses to short labels (preset ref, address-book name, or ss58)."""
+    labels: dict[str, str] = {}
+    for ref in refs:
+        address = app_ctx.resolve_address("coldkey_ss58", ref)
+        if address:
+            labels[address] = ref
+    for entry in cfg.load_addresses():
+        address = entry.get("address")
+        name = entry.get("name")
+        if address and name and address not in labels:
+            labels[str(address)] = str(name)
+    return labels
+
+
+def _build_replay_command(
+    app_ctx,
+    *,
+    target: str,
+    params: dict,
+    args_file: Optional[str],
+    sudo: bool,
+    preset: Optional[str],
+    threshold: int,
+    signatories: list[str],
+    wallet_label: str,
+    signer_role: str,
+) -> str:
+    """Build a copy-paste ``subtensor call`` command for a co-signer."""
+    parts = ["subtensor"]
+    if app_ctx.network != "finney":
+        parts.append(f"-n {shlex.quote(app_ctx.network)}")
+    parts.append(f"call {target}")
+    if args_file:
+        parts.append(f"--args-file {shlex.quote(args_file)}")
+    elif params:
+        parts.append(f"--args {shlex.quote(json.dumps(params, separators=(',', ':')))}")
+    if sudo:
+        parts.append("--sudo")
+    if preset:
+        parts.append(f"--multisig {shlex.quote(preset)}")
+    else:
+        parts.append(f"--multisig-threshold {threshold}")
+        parts.append(f"--signatories {shlex.quote(','.join(signatories))}")
+    parts.append(f"-w {shlex.quote(wallet_label)}")
+    if signer_role != "coldkey":
+        parts.append(f"--signer {signer_role}")
+    parts.append("--yes")
+    return " \\\n  ".join(parts)
+
+
+async def _multisig_followup(
+    client,
+    app_ctx,
+    *,
+    composed,
+    ms,
+    signatories: list[str],
+    threshold: int,
+    signatory_refs: list[str],
+    target: str,
+    params: dict,
+    args_file: Optional[str],
+    sudo: bool,
+    preset: Optional[str],
+    signer_role: str,
+) -> dict[str, Any]:
+    """Build co-signer instructions from on-chain multisig state after an approval."""
+    call_hash = _hex_bytes(composed.call_hash)
+    call_data = _hex_bytes(composed.data)
+    pending = await client.query(st.Multisig.Multisigs, [ms.address, call_hash])
+    labels = _signatory_labels(app_ctx, signatory_refs)
+
+    if not pending:
+        return {
+            "status": "executed",
+            "call_hash": call_hash,
+            "call_data": call_data,
+            "multisig_address": ms.address,
+            "multisig_preset": preset,
+        }
+
+    when = pending.get("when") or {}
+    timepoint = {
+        "height": int(when.get("height", 0)),
+        "index": int(when.get("index", 0)),
+    }
+    approvals = [str(a) for a in pending.get("approvals") or []]
+    remaining = [s for s in signatories if s not in approvals]
+    co_signer_commands = []
+    for ss58 in remaining:
+        label = labels.get(ss58, ss58)
+        co_signer_commands.append(
+            {
+                "ss58": ss58,
+                "label": label,
+                "command": _build_replay_command(
+                    app_ctx,
+                    target=target,
+                    params=params,
+                    args_file=args_file,
+                    sudo=sudo,
+                    preset=preset,
+                    threshold=threshold,
+                    signatories=signatories,
+                    wallet_label=label if label != ss58 else ss58,
+                    signer_role=signer_role,
+                ),
+            }
+        )
+
+    return {
+        "status": "pending",
+        "approvals": len(approvals),
+        "threshold": threshold,
+        "call_hash": call_hash,
+        "call_data": call_data,
+        "timepoint": timepoint,
+        "timepoint_display": f"{timepoint['height']}:{timepoint['index']}",
+        "multisig_address": ms.address,
+        "multisig_preset": preset,
+        "approvals_so_far": approvals,
+        "remaining_signatories": remaining,
+        "co_signer_commands": co_signer_commands,
+    }
+
+
 @with_globals
 def call(
     ctx: typer.Context,
@@ -280,9 +419,41 @@ def call(
 
     app_ctx.confirm(prompt)
     if via_multisig:
-        result = app_ctx.run(
-            lambda client: _submit_multisig(client, prepare, signing, signer, sigs, threshold)
-        )
+        if preset:
+            signatory_refs = cfg.get_multisig(preset)["signatories"]
+        elif signatories:
+            signatory_refs = [part.strip() for part in signatories.split(",") if part.strip()]
+        elif other_signatories:
+            signatory_refs = [
+                part.strip() for part in other_signatories.split(",") if part.strip()
+            ] + [app_ctx.wallet_name]
+        else:
+            signatory_refs = sigs
+
+        async def _submit_multisig(client):
+            ms = await client.multisig(sigs, threshold)
+            call = await prepare(client)
+            composed = await client.compose(call)
+            result = await ms.approve(call, signing, signer=signer)
+            followup = await _multisig_followup(
+                client,
+                app_ctx,
+                composed=composed,
+                ms=ms,
+                signatories=sigs,
+                threshold=threshold,
+                signatory_refs=signatory_refs,
+                target=target,
+                params=params,
+                args_file=args_file,
+                sudo=sudo,
+                preset=preset,
+                signer_role=signer,
+            )
+            result.data["multisig_followup"] = followup
+            return result
+
+        result = app_ctx.run(_submit_multisig)
     else:
         result = app_ctx.run(lambda client: _submit(client, prepare, signing, signer))
     if not app_ctx.output.result(result, success_msg):
@@ -302,8 +473,3 @@ async def _multisig_address(client, signatories, threshold):
 
 async def _submit(client, prepare, wallet, signer):
     return await client.submit_call(await prepare(client), wallet, signer=signer)
-
-
-async def _submit_multisig(client, prepare, wallet, signer, signatories, threshold):
-    ms = await client.multisig(signatories, threshold)
-    return await ms.approve(await prepare(client), wallet, signer=signer)

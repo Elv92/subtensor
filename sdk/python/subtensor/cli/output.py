@@ -192,6 +192,54 @@ class Output:
         if not plan.ok:
             self._out.print("  [red]blocked by policy[/red]")
 
+    def multisig_followup(self, followup: dict[str, Any]) -> None:
+        """Render co-signer instructions after a multisig approval."""
+        if self.quiet:
+            return
+        if self.json_mode:
+            self._json({"multisig_followup": followup})
+            return
+
+        status = followup.get("status")
+        if status == "executed":
+            self._out.print("[green]multisig executed[/green] — no further approvals needed.")
+            return
+
+        threshold = followup.get("threshold")
+        approvals = followup.get("approvals")
+        self._out.print()
+        self._out.print(
+            f"[bold yellow]multisig pending[/bold yellow] "
+            f"({approvals}/{threshold} approvals — share with co-signers)"
+        )
+        fields = {
+            "call_hash": followup.get("call_hash"),
+            "call_data": followup.get("call_data"),
+            "timepoint": followup.get("timepoint_display"),
+            "multisig": followup.get("multisig_address"),
+        }
+        if followup.get("multisig_preset"):
+            fields["preset"] = followup["multisig_preset"]
+        width = max((len(k) for k in fields), default=0)
+        for key, value in fields.items():
+            if value is not None:
+                self._out.print(f"  {key.rjust(width)}: {value}")
+
+        commands = followup.get("co_signer_commands") or []
+        if not commands:
+            return
+        self._out.print()
+        self._out.print("[bold]Co-signer commands[/bold] (same call; swap -w for each signer):")
+        for entry in commands:
+            label = entry.get("label") or entry.get("ss58")
+            self._out.print(f"\n  [cyan]{label}[/cyan]:")
+            for line in str(entry.get("command", "")).splitlines():
+                self._out.print(f"    {line}")
+        self._out.print()
+        self._out.print(
+            "[dim]Add --macos-password or --keychain-password if the co-signer uses them.[/dim]"
+        )
+
     def result(self, result: ExtrinsicResult, success_message: str) -> bool:
         """Render the outcome of a submitted extrinsic. Returns ``result.success``.
 
@@ -199,16 +247,22 @@ class Output:
         ``data`` and the structured, coded ``error``) so machine consumers get the
         full shape rather than a re-implemented subset.
         """
+        followup = result.data.get("multisig_followup")
         if self.json_mode:
             self._json(result.to_dict())
-        elif result.success:
+            return result.success
+        if result.success:
             self._out.print(f"[green]{success_message}[/green]")
             if result.fee is not None:
                 self._out.print(f"  fee: {result.fee}")
             if result.block_hash:
                 self._out.print(f"  block: {result.block_hash}")
             for key, value in result.data.items():
+                if key == "multisig_followup":
+                    continue
                 self._out.print(f"  {key}: {value}")
+            if followup:
+                self.multisig_followup(followup)
         else:
             self._err.print(f"[red]failed:[/red] {result.message}")
         return result.success
