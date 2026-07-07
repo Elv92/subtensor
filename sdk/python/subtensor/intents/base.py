@@ -1,16 +1,23 @@
 """The ``Intent`` base: a mutation described as serializable data.
 
-An intent is a small dataclass whose fields are JSON-native (str/int/float/bool)
-so it round-trips to and from a dict without custom encoders. It knows how to
-build its chain call, summarize itself, and expose a JSON schema. It does *not*
-know how to sign or submit — that is the client's single execute choke point.
+An intent is a small dataclass whose fields round-trip to and from a dict
+without custom encoders: scalars are JSON-native, and money fields (declared
+as :data:`Money`) normalize to an exact :class:`Balance` at construction and
+serialize back as exact decimal strings — a float never carries an amount
+internally. An intent knows how to build its chain call, summarize itself, and
+expose a JSON schema. It does *not* know how to sign or submit — that is the
+client's single execute choke point.
 """
 
 from __future__ import annotations
 
+import inspect
 from abc import ABC, abstractmethod
 from dataclasses import MISSING, asdict, dataclass, field, fields
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional
+
+from ..balance import Balance
+from ._money import Spend
 
 if TYPE_CHECKING:
     from .._substrate import Substrate
@@ -25,6 +32,40 @@ _JSON_TYPES: dict[str, str] = {
     "float": "number",
     "bool": "boolean",
 }
+
+# A non-negative decimal number, e.g. "1" or "10000000.123456789".
+_DECIMAL_PATTERN = r"^\d+(\.\d+)?$"
+
+
+def _strip_optional(annotation: str) -> str:
+    a = annotation.strip()
+    if a.startswith("Optional[") and a.endswith("]"):
+        a = a[len("Optional[") : -1].strip()
+    if a.endswith("| None"):
+        a = a[: -len("| None")].strip()
+    return a
+
+
+def is_money(annotation: str) -> bool:
+    """Whether a (stringified) field annotation declares a money field."""
+    return _strip_optional(annotation) == "Money"
+
+
+def money_schema(*, allow_all: bool) -> dict[str, Any]:
+    """JSON Schema for a money field: a number, or a decimal string for exact
+    amounts (floats lose precision above ~9M TAO), plus ``"all"`` when the
+    field can drain the whole position."""
+    options: list[dict[str, Any]] = [
+        {"type": "number"},
+        {
+            "type": "string",
+            "pattern": _DECIMAL_PATTERN,
+            "description": "decimal string, for amounts too large for an exact float",
+        },
+    ]
+    if allow_all:
+        options.append({"type": "string", "enum": ["all"]})
+    return {"anyOf": options}
 
 
 def _json_type(annotation: str) -> dict[str, Any]:
@@ -48,6 +89,10 @@ def _json_type(annotation: str) -> dict[str, Any]:
         return {"type": "object"}
     if a in _JSON_TYPES:
         return {"type": _JSON_TYPES[a]}
+    if "|" in a:  # scalar union, e.g. `int | float | str`
+        parts = [part.strip() for part in a.split("|") if part.strip() != "None"]
+        if all(part in _JSON_TYPES for part in parts):
+            return {"type": [_JSON_TYPES[part] for part in parts]}
     raise ValueError(f"Unsupported intent field annotation for JSON schema: {annotation!r}")
 
 
@@ -65,6 +110,10 @@ class Intent(ABC):
     # The chain call(s) this intent wraps, as (pallet, call_function) pairs. Used by
     # the codegen coverage gate to prove every chain call has a deliberate status.
     wraps: ClassVar[tuple[tuple[str, str], ...]] = ()
+    # Money fields (annotated ``Money``) that also accept the sentinel string
+    # "all" (the concrete amount is resolved from chain state at build time).
+    # Drives the CLI's flag/prompt parsing and the JSON schema for agents.
+    all_amount_fields: ClassVar[tuple[str, ...]] = ()
 
     @abstractmethod
     async def build(self, substrate: "Substrate", wallet: "Any"):
@@ -90,14 +139,16 @@ class Intent(ABC):
         """Non-fatal cautions surfaced by ``plan`` (e.g. dust amounts)."""
         return []
 
-    def spend_tao(self) -> float:
+    def spend(self) -> Spend:
         """TAO this intent moves out of / destroys from the signer, for policy checks.
 
-        Return ``float("inf")`` for intents that move or burn an amount the SDK
-        can't cheaply bound (so a spend cap blocks them until raised), 0 for
-        intents that move no TAO. Default is 0 — override when value leaves.
+        Return a TAO :class:`Balance` when the spend is known exactly,
+        ``UNBOUNDED`` for intents that move or burn an amount the SDK can't
+        cheaply bound (so a spend cap blocks them until raised), or ``None``
+        for intents that move no TAO. Default is ``None`` — override when
+        value leaves.
         """
-        return 0.0
+        return None
 
     def touches_netuids(self) -> list[int]:
         """Every netuid this intent acts on, for policy allowlists.
@@ -112,10 +163,38 @@ class Intent(ABC):
         """True if the intent acts across every subnet (so any allowlist must fail it)."""
         return False
 
+    # Introspection ----------------------------------------------------------
+
+    @classmethod
+    def field_help(cls, name: str) -> Optional[str]:
+        """The declared help text for one field (``metadata["help"]``), if any.
+
+        Single source for the generated ``tx`` option help, the interactive
+        prompt hints, and hand-written commands that wrap this intent.
+        """
+        for f in fields(cls):
+            if f.name == name:
+                return f.metadata.get("help")
+        return None
+
+    @classmethod
+    def describe(cls) -> str:
+        """The full docstring, dedented, for help screens and the tool manifest.
+
+        RST-style double backticks (the docstring convention here) are collapsed
+        to single backticks so --help and the JSON manifest read naturally.
+        """
+        return inspect.cleandoc(cls.__doc__ or "").replace("``", "`")
+
     # Serialization ----------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
-        return {"op": self.op, **asdict(self)}
+        """A JSON-native dict that round-trips through ``from_args`` exactly.
+
+        Money fields (held as ``Balance``) serialize as exact decimal strings —
+        a float here would silently corrupt amounts above ~9M TAO.
+        """
+        return {"op": self.op, **{k: _encode(v) for k, v in asdict(self).items()}}
 
     @classmethod
     def from_args(cls, args: dict[str, Any]) -> "Intent":
@@ -127,11 +206,25 @@ class Intent(ABC):
 
     @classmethod
     def json_schema(cls) -> dict[str, Any]:
-        """JSON Schema for this intent's parameters (for tool/agent discovery)."""
+        """JSON Schema for this intent's parameters (for tool/agent discovery).
+
+        Field descriptions come from each dataclass field's ``metadata["help"]``
+        — the same text the CLI shows as the option's ``--help`` — so the agent
+        manifest and the human help can't say different things.
+        """
         properties: dict[str, Any] = {}
         required: list[str] = []
         for f in fields(cls):
-            properties[f.name] = _json_type(str(f.type))
+            if is_money(str(f.type)):
+                schema: dict[str, Any] = money_schema(
+                    allow_all=f.name in cls.all_amount_fields
+                )
+            else:
+                schema = _json_type(str(f.type))
+            help_text = f.metadata.get("help")
+            if help_text:
+                schema["description"] = help_text
+            properties[f.name] = schema
             if f.default is MISSING and f.default_factory is MISSING:
                 required.append(f.name)
         return {
@@ -140,6 +233,17 @@ class Intent(ABC):
             "required": required,
             "additionalProperties": False,
         }
+
+
+def _encode(value: Any) -> Any:
+    """JSON-native form of a field value: Balances become exact decimal strings."""
+    if isinstance(value, Balance):
+        return format(value.decimal, "f")
+    if isinstance(value, list):
+        return [_encode(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _encode(item) for key, item in value.items()}
+    return value
 
 
 @dataclass

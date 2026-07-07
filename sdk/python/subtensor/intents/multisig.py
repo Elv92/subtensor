@@ -18,7 +18,7 @@ signer's wallet.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from scalecodec.utils.ss58 import ss58_decode
@@ -52,17 +52,51 @@ def _timepoint(value: Optional[dict]):
     return {"height": int(value["height"]), "index": int(value["index"])}
 
 
+THRESHOLD_HELP = (
+    "Number of approvals required to execute, counting the signer. Together with "
+    "the full signatory set it identifies the multisig account, so it must match "
+    "on every approval."
+)
+
+OTHER_SIGNATORIES_HELP = (
+    "The other members of the multisig (every signatory except the signer), as a "
+    "JSON list of addresses. The same set must be given on every approval; order "
+    "does not matter (sorted automatically)."
+)
+
+CALL_HELP = (
+    "The inner call to dispatch from the multisig account, as a JSON object "
+    '{"op": <intent name>, ...args}. All approvals must describe the identical '
+    "call — it is matched by hash. Its arguments must be fully explicit, since it "
+    "runs as the multisig account, not the signer's wallet."
+)
+
+TIMEPOINT_HELP = (
+    "Block height and extrinsic index of the approval that opened the operation, "
+    'as a JSON object {"height": ..., "index": ...}. Omit on the first approval; '
+    "required on every later one (read it with the multisig query)."
+)
+
+
 @register
 @dataclass
 class MultisigThreshold1(Intent):
-    """Dispatch a 1-of-N multisig call immediately (single approval)."""
+    """Dispatch a 1-of-N multisig call immediately (single approval).
+
+    For multisig accounts with threshold 1, where any single member may act
+    alone: the call executes in this same extrinsic, with no approval round,
+    no timepoint, and no deposit. The multisig account is derived from the
+    signer plus ``other_signatories``, so the full member set must still be
+    supplied even though nobody else signs. For thresholds above 1 use
+    ``multisig_execute`` / ``multisig_approve`` instead.
+    """
 
     op = "multisig_threshold_1"
     signer = "coldkey"
     wraps = (("Multisig", "as_multi_threshold_1"),)
 
-    other_signatories: list
-    call: dict
+    other_signatories: list = field(metadata={"help": OTHER_SIGNATORIES_HELP})
+    call: dict = field(metadata={"help": CALL_HELP})
 
     async def build(self, substrate, wallet: Any):
         inner = await _compose_inner(substrate, wallet, self.call)
@@ -79,16 +113,28 @@ class MultisigThreshold1(Intent):
 @register
 @dataclass
 class MultisigExecute(Intent):
-    """Approve and, if the threshold is met, execute a multisig call (final approval)."""
+    """Approve and, if the threshold is met, execute a multisig call (final approval).
+
+    Sends the full inner call along with an approval. If this is the first
+    approval (omit ``timepoint``), it opens the operation and reserves a
+    deposit from the signer, returned when the operation completes or is
+    cancelled. If it is the final approval — bringing the count to
+    ``threshold`` — the inner call executes as the multisig account in the
+    same extrinsic. Intermediate signers can use the cheaper
+    ``multisig_approve`` (hash only), but whoever approves last must use this
+    intent so the chain has the call to run. Every approval must repeat the
+    same threshold, signatory set, and call; later approvals must also pass
+    the opening ``timepoint`` or they will not match the pending operation.
+    """
 
     op = "multisig_execute"
     signer = "coldkey"
     wraps = (("Multisig", "as_multi"),)
 
-    threshold: int
-    other_signatories: list
-    call: dict
-    timepoint: Optional[dict] = None  # None for the first approval, else {height, index}
+    threshold: int = field(metadata={"help": THRESHOLD_HELP})
+    other_signatories: list = field(metadata={"help": OTHER_SIGNATORIES_HELP})
+    call: dict = field(metadata={"help": CALL_HELP})
+    timepoint: Optional[dict] = field(default=None, metadata={"help": TIMEPOINT_HELP})
 
     async def build(self, substrate, wallet: Any):
         inner = await _compose_inner(substrate, wallet, self.call)
@@ -113,16 +159,26 @@ class MultisigExecute(Intent):
 @register
 @dataclass
 class MultisigApprove(Intent):
-    """Register approval for a multisig call by its hash (non-final approvals)."""
+    """Register approval for a multisig call by its hash (non-final approvals).
+
+    Records the signer's approval for a pending multisig operation without
+    dispatching anything: only the call's hash goes on chain. Use it to open
+    an operation (omit ``timepoint``; reserves a deposit from the signer) or
+    for intermediate approvals (pass the opening ``timepoint``). It never
+    executes — once ``threshold - 1`` approvals exist, the last signatory
+    must send ``multisig_execute`` with the full call. Approving twice from
+    the same signer, or with a mismatched timepoint, threshold, or signatory
+    set, fails.
+    """
 
     op = "multisig_approve"
     signer = "coldkey"
     wraps = (("Multisig", "approve_as_multi"),)
 
-    threshold: int
-    other_signatories: list
-    call: dict
-    timepoint: Optional[dict] = None
+    threshold: int = field(metadata={"help": THRESHOLD_HELP})
+    other_signatories: list = field(metadata={"help": OTHER_SIGNATORIES_HELP})
+    call: dict = field(metadata={"help": CALL_HELP})
+    timepoint: Optional[dict] = field(default=None, metadata={"help": TIMEPOINT_HELP})
 
     async def build(self, substrate, wallet: Any):
         inner = await _compose_inner(substrate, wallet, self.call)
@@ -147,16 +203,29 @@ class MultisigApprove(Intent):
 @register
 @dataclass
 class MultisigCancel(Intent):
-    """Cancel an ongoing multisig operation (only the original depositor may)."""
+    """Cancel an ongoing multisig operation (only the original depositor may).
+
+    Abandons a pending operation before it collects enough approvals: the
+    stored approvals are discarded and the deposit reserved at opening is
+    returned. Only the signatory who opened the operation (and paid the
+    deposit) may cancel it. The threshold, signatory set, call, and opening
+    ``timepoint`` must all match the pending operation exactly.
+    """
 
     op = "multisig_cancel"
     signer = "coldkey"
     wraps = (("Multisig", "cancel_as_multi"),)
 
-    threshold: int
-    other_signatories: list
-    call: dict
-    timepoint: dict  # the opening timepoint {height, index}
+    threshold: int = field(metadata={"help": THRESHOLD_HELP})
+    other_signatories: list = field(metadata={"help": OTHER_SIGNATORIES_HELP})
+    call: dict = field(metadata={"help": CALL_HELP})
+    timepoint: dict = field(
+        metadata={
+            "help": "Block height and extrinsic index of the approval that opened the "
+            'operation, as a JSON object {"height": ..., "index": ...}. Required — '
+            "it identifies which pending operation to cancel."
+        }
+    )
 
     async def build(self, substrate, wallet: Any):
         inner = await _compose_inner(substrate, wallet, self.call)

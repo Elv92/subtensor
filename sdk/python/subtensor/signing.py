@@ -7,14 +7,15 @@ round-trip to a device or a service (Ledger, OS keychain, remote signing box)
 fit the same protocol without the SDK changing.
 
 ``bittensor_wallet`` keyfiles are the first backend (:class:`WalletSigner`).
-Every SDK API that accepts a ``wallet`` also accepts a ``Signer`` directly:
-``resolve_signer`` at the signing choke points wraps a ``Wallet`` and passes
-anything already signer-shaped through untouched.
+Every SDK API that accepts a ``wallet`` accepts a :data:`WalletLike`: a
+``Wallet``, anything wallet-shaped (:class:`KeyedWallet` — e.g. an object
+carrying dev keypairs), or a :class:`Signer` directly. ``resolve_signer`` at
+the signing choke points normalizes all of them.
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import Any, Optional, Protocol, Union, runtime_checkable
 
 from bittensor_wallet import Wallet
 
@@ -50,6 +51,32 @@ class Signer(Protocol):
 
     def sign(self, payload: bytes) -> bytes:
         ...
+
+
+@runtime_checkable
+class KeyedWallet(Protocol):
+    """Anything wallet-shaped: it carries a coldkey, a coldkey public view, and
+    a hotkey (each keypair-like, i.e. satisfying :class:`Signer`).
+
+    ``bittensor_wallet.Wallet`` matches this shape, and so does any plain
+    object holding dev keypairs (e.g. a test double built from ``//Alice``).
+    """
+
+    @property
+    def coldkey(self) -> Any:
+        ...
+
+    @property
+    def coldkeypub(self) -> Any:
+        ...
+
+    @property
+    def hotkey(self) -> Any:
+        ...
+
+
+# What every ``wallet`` parameter in the SDK accepts.
+WalletLike = Union[Wallet, KeyedWallet, "Signer"]
 
 
 class WalletSigner:
@@ -127,15 +154,16 @@ class WalletSigner:
 
 
 def resolve_signer(
-    wallet: Any,
+    wallet: WalletLike,
     role: str = "coldkey",
     *,
     password: Optional[str] = None,
     password_file: Optional[str] = None,
     macos_prompt: bool = False,
     keychain: bool = False,
-) -> Any:
-    """The signer for ``wallet``: a ``Wallet`` is wrapped, a ``Signer`` passes through.
+) -> Signer:
+    """The signer for ``wallet``: a ``Wallet`` is wrapped, a ``Signer`` passes
+    through, and a :class:`KeyedWallet` yields its keypair for ``role``.
 
     This is the single seam every signing path goes through. Passing a raw
     ``Keypair`` also works — it already satisfies the protocol.
@@ -153,18 +181,22 @@ def resolve_signer(
         return wallet
     if getattr(wallet, "uses_extension_signing", False):
         return wallet
+    if isinstance(wallet, KeyedWallet):
+        return wallet.coldkey if role == "coldkey" else wallet.hotkey
     raise TypeError(
-        f"cannot sign with {type(wallet).__name__}: expected a bittensor_wallet.Wallet "
-        "or an object implementing subtensor.Signer"
+        f"cannot sign with {type(wallet).__name__}: expected a bittensor_wallet.Wallet, "
+        "a wallet-shaped object (coldkey/coldkeypub/hotkey), or an object implementing "
+        "subtensor.Signer"
     )
 
 
-def public_view(wallet: Any, role: str = "coldkey") -> Any:
+def public_view(wallet: WalletLike, role: str = "coldkey") -> Any:
     """An address/public-key view for fee and weight estimation.
 
-    Never unlocks a private key: a ``Wallet`` yields its pub-file keypair, a
-    ``Signer`` already exposes its public parts without unlocking.
+    Never unlocks a private key: anything wallet-shaped yields its public
+    coldkey view (or its hotkey, which is stored unencrypted); a ``Signer``
+    already exposes its public parts without unlocking.
     """
-    if isinstance(wallet, Wallet):
+    if isinstance(wallet, (Wallet, KeyedWallet)) and not isinstance(wallet, Signer):
         return wallet.coldkeypub if role == "coldkey" else wallet.hotkey
     return wallet

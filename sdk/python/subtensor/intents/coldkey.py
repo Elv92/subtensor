@@ -17,7 +17,7 @@ stay raw-only on purpose.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import blake2b
 from typing import Any
 
@@ -39,16 +39,28 @@ def coldkey_hash(ss58: str) -> str:
 class AnnounceColdkeySwap(Intent):
     """Announce (commit to) a coldkey swap; executable after the chain's delay.
 
-    Publishes only the hash of ``new_coldkey_ss58``. Follow up with the
-    ``swap_coldkey_announced`` intent once the announcement delay has passed
-    (check timing with the ``coldkey_swap_announcement`` read).
+    Step one of the two-step coldkey migration: publishes only the BlakeTwo256
+    hash of ``new_coldkey_ss58`` — committing to the new key without revealing
+    it — and starts the chain's announcement delay. After the delay, run the
+    ``swap_coldkey_announced`` intent to move EVERYTHING this coldkey owns
+    (balance, stake, subnets) to the new key; check timing with the
+    ``coldkey_swap_announcement`` read. Before announcing, be certain you
+    control the new coldkey and have its mnemonic backed up. A pending
+    announcement can be cancelled with ``clear_coldkey_swap_announcement``,
+    and the legitimate holder can freeze an unauthorized one with
+    ``dispute_coldkey_swap``.
     """
 
     op = "announce_coldkey_swap"
     signer = "coldkey"
     wraps = (("SubtensorModule", "announce_coldkey_swap"),)
 
-    new_coldkey_ss58: str
+    new_coldkey_ss58: str = field(
+        metadata={
+            "help": "Coldkey that will take over everything this coldkey owns once the "
+            "swap executes; only its hash is published now."
+        }
+    )
 
     async def build(self, substrate, wallet: Any):
         return await substrate.compose(
@@ -71,13 +83,27 @@ class AnnounceColdkeySwap(Intent):
 @register
 @dataclass
 class SwapColdkeyAnnounced(Intent):
-    """Execute a previously announced coldkey swap (after the delay has passed)."""
+    """Execute a previously announced coldkey swap (after the delay has passed).
+
+    Step two of the two-step migration: reveals the new coldkey and moves
+    everything the signing coldkey owns — balance, stake, and subnet ownership
+    — to it. Irreversible once included. The revealed key must hash to exactly
+    what ``announce_coldkey_swap`` committed to, and the call fails if the
+    announcement delay has not elapsed, no announcement exists, or the swap
+    is frozen by a dispute. After it succeeds, the old coldkey is empty; all
+    future operations sign with the new coldkey.
+    """
 
     op = "swap_coldkey_announced"
     signer = "coldkey"
     wraps = (("SubtensorModule", "swap_coldkey_announced"),)
 
-    new_coldkey_ss58: str
+    new_coldkey_ss58: str = field(
+        metadata={
+            "help": "Coldkey receiving everything; must match the previously announced "
+            "hash exactly."
+        }
+    )
 
     async def build(self, substrate, wallet: Any):
         return await substrate.compose(
@@ -100,7 +126,16 @@ class SwapColdkeyAnnounced(Intent):
 @register
 @dataclass
 class ClearColdkeySwapAnnouncement(Intent):
-    """Cancel a pending coldkey swap announcement (after the reannouncement delay)."""
+    """Cancel a pending coldkey swap announcement (after the reannouncement delay).
+
+    Withdraws this coldkey's own pending swap announcement so the swap can no
+    longer be executed — use it if you announced to the wrong key or changed
+    your mind. Only clearable after the chain's reannouncement delay has
+    passed, so it cannot be used to rapidly cycle announcements. Nothing
+    moves; a fresh ``announce_coldkey_swap`` can be made afterwards. If the
+    announcement was made by an attacker, ``dispute_coldkey_swap`` is the
+    right call instead.
+    """
 
     op = "clear_coldkey_swap_announcement"
     signer = "coldkey"
@@ -118,8 +153,13 @@ class ClearColdkeySwapAnnouncement(Intent):
 class DisputeColdkeySwap(Intent):
     """Freeze this coldkey's pending swap until governance resolves it.
 
-    Use if a swap was announced on your coldkey that you did not initiate
-    (i.e. the key may be compromised).
+    The recovery path for a compromised coldkey: if a swap was announced on
+    your coldkey that you did not initiate, disputing blocks it from executing
+    until the triumvirate resolves the dispute. Sign it from the affected
+    coldkey itself. It does not cancel the announcement or move anything — it
+    freezes the situation so an attacker cannot complete the takeover while
+    governance investigates. Use ``clear_coldkey_swap_announcement`` instead
+    to withdraw an announcement you made yourself.
     """
 
     op = "dispute_coldkey_swap"

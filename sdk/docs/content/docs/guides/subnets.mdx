@@ -1,0 +1,81 @@
+---
+title: Running a subnet
+description: Create a subnet, activate it, tune hyperparameters, and manage its identity and economics.
+---
+
+A subnet owner defines an incentive mechanism: what miners must produce and how
+validators must score it. The chain side — creating the subnet, tuning its
+hyperparameters, publishing its identity — is all reachable through the SDK.
+The mechanism itself is code you write and run off-chain.
+
+## Create
+
+[`register-subnet`](/docs/tx/register-subnet) creates a new subnet owned by
+your coldkey, with your wallet's hotkey as the subnet-owner hotkey:
+
+```bash
+subtensor query subnet-registration-cost --json   # check the lock cost FIRST
+subtensor tx register-subnet --dry-run -w my_coldkey
+subtensor tx register-subnet -w my_coldkey
+```
+
+The registration cost — potentially thousands of TAO — rises after each new
+subnet registration and decays over time; it is only known at execution time,
+so a `Policy` spend cap blocks this call until raised. This is a major,
+expensive commitment.
+
+## Activate
+
+A new subnet starts inactive and earns nothing. Once the chain's activation
+delay has passed, flip it on with [`start-call`](/docs/tx/start-call) —
+owner-only, once per subnet:
+
+```bash
+subtensor tx start-call --netuid 42 -w my_coldkey
+```
+
+Check the schedule with
+[`subnet-start-schedule`](/docs/query/subnet-start-schedule).
+
+## Tune hyperparameters
+
+Owner-settable hyperparameters go through
+[`set-hyperparameter`](/docs/tx/set-hyperparameter) (the equivalent of btcli's
+`sudo set`); read them back with
+[`subnet-hyperparameters`](/docs/query/subnet-hyperparameters):
+
+```bash
+subtensor query subnet-hyperparameters --netuid 42 --json
+subtensor tx set-hyperparameter --netuid 42 --name commit_reveal_weights_enabled --value 1 -w my_coldkey
+```
+
+Changes take effect immediately and shape the subnet's economics and consensus
+(registration costs, weight rules, immunity, transfers). Some parameters are
+chain-rate-limited. Root-only parameters are not available here — they need the
+[raw-call escape hatch](/docs/concepts/advanced) and root privileges.
+
+## Identity and token
+
+- [`set-subnet-identity`](/docs/tx/set-subnet-identity) — the subnet's public
+  profile (name, links, contact, logo). Public and permanent; each call
+  overwrites the whole record.
+- [`update-symbol`](/docs/tx/update-symbol) — the subnet token's ticker.
+
+## Mechanisms
+
+A subnet can run multiple scoring mechanisms, each with its own weights.
+[`set-mechanism-count`](/docs/tx/set-mechanism-count) and
+[`set-mechanism-emission-split`](/docs/tx/set-mechanism-emission-split)
+configure them; validators target one via the `mechid` field on
+[`set-weights`](/docs/tx/set-weights).
+
+## Financing: leases and crowdloans
+
+A subnet can be financed collectively: create a crowdloan
+([`create-crowdloan`](/docs/tx/create-crowdloan), contributions via
+[`contribute-crowdloan`](/docs/tx/contribute-crowdloan)) and register the
+network under a lease that shares emissions with contributors
+([`register-leased-network`](/docs/tx/register-leased-network), ended with
+[`terminate-lease`](/docs/tx/terminate-lease)). Inspect with the
+[`crowdloans`](/docs/query/crowdloans) and [`leases`](/docs/query/leases)
+reads.

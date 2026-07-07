@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-import websockets
 from websockets.asyncio.server import serve as ws_serve
 
 from .browser import open_bridge_page
@@ -54,6 +53,7 @@ class BridgeServer:
                 self.port,
                 process_request=self._process_request,
             )
+            logger.debug(f"Bridge server listening on {self.http_url}")
         if open_browser:
             open_bridge_page(self.http_url, browser=browser)
 
@@ -62,6 +62,7 @@ class BridgeServer:
             self._ws_server.close()
             await self._ws_server.wait_closed()
             self._ws_server = None
+            logger.debug("Bridge server stopped")
 
     async def wait_until_ready(self, timeout: float = 30.0) -> None:
         deadline = asyncio.get_running_loop().time() + timeout
@@ -103,6 +104,7 @@ class BridgeServer:
     async def _handle_browser(self, websocket: Any) -> None:
         previous = self.state.browser_ws
         self.state.browser_ws = websocket
+        logger.debug("Browser bridge page connected")
         if previous is not None:
             await previous.close(code=1012, reason="replaced by new bridge tab")
         try:
@@ -120,6 +122,7 @@ class BridgeServer:
         finally:
             if self.state.browser_ws is websocket:
                 self.state.browser_ws = None
+                logger.debug("Browser bridge page disconnected")
 
     async def _handle_client(self, websocket: Any) -> None:
         async for raw in websocket:

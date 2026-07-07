@@ -1,0 +1,55 @@
+---
+title: Money
+description: The Balance type, TAO vs alpha, rao, and valuing stake without lying to yourself.
+---
+
+Amounts on Bittensor come in two kinds of currency: **TAO**, the chain token,
+and **alpha**, of which every subnet has its own. They trade against each other
+in per-subnet pools, so an alpha amount is meaningless without knowing which
+subnet it belongs to — and 1 alpha on subnet 1 is not worth 1 alpha on
+subnet 2.
+
+## The Balance type
+
+`Balance` is unit-tagged: every instance carries the netuid whose currency it
+denominates (netuid 0 is TAO). Arithmetic between different units raises
+`UnitMismatchError` instead of silently mixing currencies.
+
+```python
+import subtensor as sub
+
+sub.Balance.from_tao("10000000.123456789")   # exact TAO (str/Decimal for big amounts)
+sub.Balance.from_alpha(2.5, netuid=42)       # subnet-42 alpha; prints with the subnet's
+                                             # on-chain token symbol (α₄₂ before connect)
+sub.tao(1.5); sub.alpha(2.5, 42); sub.rao(1_500_000_000)   # shorthands
+```
+
+Readback is unit-named too: `.tao` on a TAO balance, `.alpha` on an alpha
+balance — and `.tao` on an alpha balance raises rather than pretending the
+units are interchangeable. The base unit is **rao**: 1 TAO = 10⁹ rao.
+
+## Amount parameters
+
+Intent fields are named by unit so there is no ambiguity about what a number
+means: `amount_tao` is TAO, `amount_alpha` is the subnet's alpha (the origin
+subnet for cross-subnet moves), `*_rao` is rao. Money fields that support it
+accept the string `"all"` — the concrete amount is resolved from chain state at
+build time (e.g. [`transfer`](/docs/tx/transfer),
+[`remove-stake`](/docs/tx/remove-stake)).
+
+## Valuing stake
+
+Alpha is never summed across subnets or silently treated as TAO. To value a
+coldkey's stake in TAO, use the
+[`stake-value-for-coldkey`](/docs/query/stake-value-for-coldkey) read: a spot
+price mark (`alpha × price`, excluding slippage and fees), pinned to one block.
+For what you would actually receive by exiting a position, simulate the swap
+with [`quote-unstake`](/docs/query/quote-unstake), which includes fees and
+slippage.
+
+## Slippage
+
+Staking and unstaking are swaps against a pool, so large amounts move the
+price. The `*-limit` variants ([`add-stake-limit`](/docs/tx/add-stake-limit),
+[`remove-stake-limit`](/docs/tx/remove-stake-limit)) bound the execution price
+and fail instead of filling badly.

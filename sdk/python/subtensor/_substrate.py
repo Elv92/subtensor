@@ -1,69 +1,88 @@
-"""Thin async wrapper over ``AsyncSubstrateInterface``.
+"""The chain-access seam: the :class:`Substrate` contract and its RPC backend.
 
-This is the only module that talks to the transport library directly. It handles
-connection lifecycle, storage/constant/runtime-API reads, and turning a composed
-call into a typed :class:`ExtrinsicResult`.
+``Substrate`` is the narrow protocol everything above the transport is written
+against — the executor, intents, reads, and domain namespaces all take "a
+Substrate", never a websocket. :class:`RpcSubstrate` is the production
+implementation: a thin async wrapper over the transport's
+``SubstrateConnection``, and the only code in the SDK that talks to the
+transport directly.
+
+``Client`` constructs an :class:`RpcSubstrate` by default; pass ``substrate=``
+to inject any other implementation (an in-memory fake for tests needs no
+network at all).
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Protocol, TypeVar
 
-from ._transport import AsyncSubstrateInterface
-from ._transport.errors import SubstrateRequestException
+from ._transport import SubstrateConnection
+from ._transport.contract import InclusionReport, MultisigAccount, SignedExtrinsic
+from ._transport.errors import StateDiscardedError, SubstrateRequestException
 from .balance import Balance
 from .result import ChainError, ConnectionNotReady, ExtrinsicResult, chain_error_from_substrate_request
-from .settings import DEFAULT_ERA_PERIOD, SS58_FORMAT, TYPE_REGISTRY
+from .settings import DEFAULT_ERA_PERIOD, SS58_FORMAT, TYPE_REGISTRY, explorer_extrinsic_url
+
+T = TypeVar("T")
 
 
-class Substrate:
-    def __init__(self, endpoint: str):
-        self.endpoint = endpoint
-        self._substrate: Optional[AsyncSubstrateInterface] = None
+class Substrate(Protocol):
+    """Anything that can read chain state and submit extrinsics.
 
-    @property
-    def raw(self) -> AsyncSubstrateInterface:
-        if self._substrate is None:
-            raise ConnectionNotReady(
-                "Client connection is not open. Use `async with Client(...)` "
-                "or call `await client.connect()` first."
-            )
-        return self._substrate
+    This is the SDK's chain-access contract. Reads take an optional
+    ``block_hash`` and return plain decoded values; writes take a composed call
+    and a keypair-shaped signer and return a typed :class:`ExtrinsicResult`
+    (never a raw receipt). Implementations raise :class:`ChainError` for
+    chain-side failures on reads; a failed write is reported through the
+    result, not an exception.
+    """
+
+    # Display metadata -----------------------------------------------------------
+
+    # netuid -> chain-registered token symbol for this connection, installed by
+    # ``Client.connect``. Connection-scoped: two clients on different networks
+    # each render their own chain's symbols.
+    token_symbols: dict[int, str]
+
+    def balance(self, rao: int, netuid: int = 0) -> Balance:
+        """A :class:`Balance` tagged with this connection's token symbol.
+
+        The decode-time factory reads use for subnet-denominated amounts, so a
+        value renders with the right symbol no matter how many clients or
+        networks the process talks to.
+        """
+        ...
+
+    # Lifecycle ----------------------------------------------------------------
 
     async def connect(self) -> None:
-        if self._substrate is not None:
-            return
-        substrate = AsyncSubstrateInterface(
-            url=self.endpoint,
-            ss58_format=SS58_FORMAT,
-            type_registry=TYPE_REGISTRY,
-            use_remote_preset=True,
-            chain_name="Bittensor",
-        )
-        await substrate.initialize()
-        self._substrate = substrate
+        """Open the connection. Idempotent."""
+        ...
 
     async def close(self) -> None:
-        if self._substrate is not None:
-            await self._substrate.close()
-            self._substrate = None
+        """Close the connection and release resources."""
+        ...
 
-    # Reads ------------------------------------------------------------------
+    # Reads --------------------------------------------------------------------
 
     async def block_hash(self, block: Optional[int] = None) -> str:
-        try:
-            if block is None:
-                return await self.raw.get_chain_head()
-            return await self.raw.get_block_hash(block)
-        except SubstrateRequestException as error:
-            raise ChainError(str(error)) from error
+        """Hash of a block number (defaults to the chain head)."""
+        ...
 
     async def block_number(self) -> int:
-        try:
-            return await self.raw.get_block_number(None)
-        except SubstrateRequestException as error:
-            raise ChainError(str(error)) from error
+        """Current chain block number."""
+        ...
+
+    async def block_time(self) -> float:
+        """Seconds per block, detected from the chain."""
+        ...
+
+    async def get_block(
+        self, block_number: Optional[int] = None, block_hash: Optional[str] = None
+    ) -> Optional[dict]:
+        """A block's header and decoded extrinsics (defaults to the chain head)."""
+        ...
 
     async def query(
         self,
@@ -72,16 +91,8 @@ class Substrate:
         params: Optional[list] = None,
         block_hash: Optional[str] = None,
     ) -> Any:
-        try:
-            result = await self.raw.query(
-                module=module,
-                storage_function=storage_function,
-                params=params or [],
-                block_hash=block_hash,
-            )
-        except SubstrateRequestException as error:
-            raise ChainError(str(error)) from error
-        return result.value
+        """Read one storage item, returning its plain decoded value."""
+        ...
 
     async def query_map(
         self,
@@ -90,18 +101,273 @@ class Substrate:
         params: Optional[list] = None,
         block_hash: Optional[str] = None,
     ) -> list[tuple[Any, Any]]:
-        try:
-            result = await self.raw.query_map(
-                module=module,
-                storage_function=storage_function,
-                params=params or [],
-                block_hash=block_hash,
+        """Read a whole storage map as decoded ``(key, value)`` pairs."""
+        ...
+
+    async def query_batch(
+        self,
+        module: str,
+        storage_function: str,
+        param_sets: list[list],
+        block_hash: Optional[str] = None,
+    ) -> list[Any]:
+        """Read one storage map for many keys, results in ``param_sets`` order."""
+        ...
+
+    async def runtime_call(
+        self, api: str, method: str, params: list, block_hash: Optional[str] = None
+    ) -> Any:
+        """Call a runtime API, returning its plain decoded value."""
+        ...
+
+    async def constant(self, module: str, name: str) -> Any:
+        """Read a pallet constant."""
+        ...
+
+    async def decode_scale(self, type_string: str, data: Any) -> Any:
+        """Decode SCALE-encoded bytes against the connected runtime's types."""
+        ...
+
+    def blocks(self, *, finalized: bool = False) -> AsyncIterator[dict]:
+        """Stream decoded block headers as they are produced (or finalized)."""
+        ...
+
+    # Calls and fees -------------------------------------------------------------
+
+    async def compose(self, call) -> Any:
+        """Compose a generated ``(module, function, params)`` call into a chain-ready call."""
+        ...
+
+    async def estimate_fee(self, call, keypair) -> Balance:
+        """Estimate the fee for a call without submitting it (no signature needed)."""
+        ...
+
+    async def estimate_weight(self, call, keypair) -> dict:
+        """The dispatch weight ``{ref_time, proof_size}`` of a call."""
+        ...
+
+    async def account_next_index(self, address: str) -> int:
+        """Next valid nonce for an account, including transactions in the pool."""
+        ...
+
+    # Writes ---------------------------------------------------------------------
+
+    async def mev_next_key(self) -> Optional[bytes]:
+        """The MEV Shield ML-KEM-768 public key from ``NextKey`` storage, if active."""
+        ...
+
+    async def sign_extrinsic(self, call, keypair, *, nonce: int, period: int) -> tuple[bytes, str]:
+        """A signed extrinsic's (raw bytes, 0x-hex hash), without submitting."""
+        ...
+
+    async def submit(
+        self,
+        call,
+        keypair,
+        *,
+        nonce: Optional[int] = None,
+        period: Optional[int] = DEFAULT_ERA_PERIOD,
+        wait_for_inclusion: bool = True,
+        wait_for_finalization: bool = True,
+    ) -> ExtrinsicResult:
+        """Sign, submit, and wait for a call, returning a typed result."""
+        ...
+
+    async def submit_signed(
+        self,
+        extrinsic,
+        keypair,
+        *,
+        wait_for_inclusion: bool = True,
+        wait_for_finalization: bool = True,
+    ) -> ExtrinsicResult:
+        """Submit an already-signed extrinsic, returning a typed result."""
+        ...
+
+    # Multisig ---------------------------------------------------------------------
+
+    def multisig_account(self, signatories: list[str], threshold: int):
+        """Derive the deterministic multisig ``MultiAccountId`` for a signer set."""
+        ...
+
+    async def submit_multisig(
+        self,
+        call,
+        keypair,
+        multisig_account,
+        *,
+        wait_for_inclusion: bool = True,
+        wait_for_finalization: bool = True,
+    ) -> ExtrinsicResult:
+        """Record one signatory's approval of ``call`` for a multisig account."""
+        ...
+
+
+class RpcSubstrate:
+    def __init__(
+        self,
+        endpoint: str,
+        *,
+        fallback_endpoints: Optional[list[str]] = None,
+        archive_endpoints: Optional[list[str]] = None,
+        retry_forever: bool = False,
+    ):
+        self.endpoint = endpoint
+        self.fallback_endpoints = list(fallback_endpoints or [])
+        self.archive_endpoints = [url for url in (archive_endpoints or []) if url != endpoint]
+        self.retry_forever = retry_forever
+        self._substrate: Optional[SubstrateConnection] = None
+        self._archive_substrate: Optional[SubstrateConnection] = None
+        self._archive_lock = asyncio.Lock()
+        self._block_time: Optional[float] = None
+        # netuid -> chain-registered token symbol for THIS connection, installed
+        # by ``Client.connect``. Connection-scoped on purpose: two clients on
+        # different networks each render their own chain's symbols.
+        self.token_symbols: dict[int, str] = {}
+
+    def balance(self, rao: int, netuid: int = 0) -> Balance:
+        """A :class:`Balance` tagged with this connection's token symbol.
+
+        The decode-time factory every read should use for subnet-denominated
+        amounts, so the value renders with the right symbol regardless of how
+        many clients or networks the process talks to. Symbol lookup is a dict
+        get against the map fetched once at connect.
+        """
+        symbol = self.token_symbols.get(netuid) if netuid else None
+        return Balance(int(rao), netuid, symbol)
+
+    @property
+    def raw(self) -> SubstrateConnection:
+        if self._substrate is None:
+            raise ConnectionNotReady(
+                "Client connection is not open. Use `async with Client(...)` "
+                "or call `await client.connect()` first."
             )
-            return [
-                (_unwrap_key(k), v.value if hasattr(v, "value") else v) async for k, v in result
-            ]
+        return self._substrate
+
+    def _interface(self, endpoint: str, fallbacks: list[str]) -> SubstrateConnection:
+        return SubstrateConnection(
+            endpoint,
+            ss58_format=SS58_FORMAT,
+            type_registry=TYPE_REGISTRY,
+            fallback_urls=fallbacks,
+            retry_forever=self.retry_forever,
+        )
+
+    async def connect(self) -> None:
+        if self._substrate is not None:
+            return
+        substrate = self._interface(self.endpoint, self.fallback_endpoints)
+        await substrate.initialize()
+        self._substrate = substrate
+
+    async def _archive(self) -> Optional[SubstrateConnection]:
+        """The lazily-opened archive connection, or None when no archive pool is configured."""
+        if not self.archive_endpoints:
+            return None
+        async with self._archive_lock:
+            if self._archive_substrate is None:
+                primary, *fallbacks = self.archive_endpoints
+                substrate = self._interface(primary, fallbacks)
+                await substrate.initialize()
+                self._archive_substrate = substrate
+        return self._archive_substrate
+
+    async def _read(self, op: Callable[[SubstrateConnection], Awaitable[T]]) -> T:
+        """Run a read against the live connection, normalizing transport errors
+        into :class:`ChainError`.
+
+        When the read hits state the (lite) primary node has already pruned, it
+        is transparently retried against the archive pool instead of failing
+        with "state discarded".
+        """
+        try:
+            try:
+                return await op(self.raw)
+            except StateDiscardedError:
+                archive = await self._archive()
+                if archive is None:
+                    raise
+                return await op(archive)
         except SubstrateRequestException as error:
             raise ChainError(str(error)) from error
+
+    async def close(self) -> None:
+        if self._substrate is not None:
+            await self._substrate.close()
+            self._substrate = None
+        if self._archive_substrate is not None:
+            await self._archive_substrate.close()
+            self._archive_substrate = None
+
+    # Reads ------------------------------------------------------------------
+
+    async def block_hash(self, block: Optional[int] = None) -> str:
+        if block is None:
+            return await self._read(lambda raw: raw.get_chain_head())
+        return await self._read(lambda raw: raw.get_block_hash(block))
+
+    async def block_number(self) -> int:
+        return await self._read(lambda raw: raw.get_block_number(None))
+
+    async def block_time(self) -> float:
+        """Seconds per block, from the chain's ``Aura.SlotDuration`` constant.
+
+        Cached after the first read — a constant can only change with a runtime
+        upgrade. 12.0 on mainnet, 0.25 on fast-blocks local chains; the detected
+        value is what all timing math (commit-reveal rounds, "retry in ~Ns"
+        hints, waits) must use, never a hardcoded block time.
+        """
+        if self._block_time is None:
+            self._block_time = int(await self.constant("Aura", "SlotDuration")) / 1000.0
+        return self._block_time
+
+    async def get_block(
+        self, block_number: Optional[int] = None, block_hash: Optional[str] = None
+    ) -> Optional[dict]:
+        """A block's header and decoded extrinsics (defaults to the chain head).
+
+        Extrinsics that fail to decode are returned as None entries rather than
+        failing the whole block.
+        """
+        block = await self._read(
+            lambda raw: raw.get_block(
+                block_hash=block_hash,
+                block_number=block_number,
+                ignore_decoding_errors=True,
+            )
+        )
+        if block is None:
+            return None
+        return {"header": block.header, "extrinsics": block.extrinsics}
+
+    async def query(
+        self,
+        module: str,
+        storage_function: str,
+        params: Optional[list] = None,
+        block_hash: Optional[str] = None,
+    ) -> Any:
+        return await self._read(
+            lambda raw: raw.query(module, storage_function, params or [], block_hash)
+        )
+
+    async def query_map(
+        self,
+        module: str,
+        storage_function: str,
+        params: Optional[list] = None,
+        block_hash: Optional[str] = None,
+    ) -> list[tuple[Any, Any]]:
+        async def op(raw: SubstrateConnection) -> list[tuple[Any, Any]]:
+            # Iterate inside the op so pagination follows the same connection
+            # the first page came from (matters for the archive retry).
+            result = await raw.query_map(
+                module, storage_function, params or [], block_hash
+            )
+            return [(_unwrap_key(k), v) async for k, v in result]
+
+        return await self._read(op)
 
     async def query_batch(
         self,
@@ -118,20 +384,9 @@ class Substrate:
         """
         if not param_sets:
             return []
-        if block_hash is None:
-            block_hash = await self.block_hash()
-        try:
-            keys = [
-                await self.raw.create_storage_key(
-                    module, storage_function, params, block_hash=block_hash
-                )
-                for params in param_sets
-            ]
-            results = await self.raw.query_multi(keys, block_hash=block_hash)
-        except SubstrateRequestException as error:
-            raise ChainError(str(error)) from error
-        by_key = {tuple(key.params): value for key, value in results}
-        return [_scale_value(by_key.get(tuple(params))) for params in param_sets]
+        return await self._read(
+            lambda raw: raw.query_batch(module, storage_function, param_sets, block_hash)
+        )
 
     async def runtime_call(
         self,
@@ -140,50 +395,32 @@ class Substrate:
         params: list,
         block_hash: Optional[str] = None,
     ) -> Any:
-        try:
-            result = await self.raw.runtime_call(api, method, params, block_hash=block_hash)
-        except SubstrateRequestException as error:
-            raise ChainError(str(error)) from error
-        return result.value if hasattr(result, "value") else result
+        return await self._read(
+            lambda raw: raw.runtime_call(api, method, params, block_hash)
+        )
 
     async def constant(self, module: str, name: str) -> Any:
-        try:
-            result = await self.raw.get_constant(module, name)
-        except SubstrateRequestException as error:
-            raise ChainError(str(error)) from error
-        return result.value if hasattr(result, "value") else result
+        return await self._read(lambda raw: raw.get_constant(module, name))
+
+    async def decode_scale(self, type_string: str, data: Any) -> Any:
+        """Decode SCALE-encoded bytes (or 0x-hex) against the connected runtime's types.
+
+        e.g. ``decode_scale("Call", call_data_hex)`` recovers the call a
+        multisig or timelock carries around, as a plain decoded dict.
+        """
+        return await self._read(lambda raw: raw.decode_scale(type_string, data))
 
     async def blocks(self, *, finalized: bool = False) -> AsyncIterator[dict]:
         """Stream decoded block headers as they are produced (or finalized).
 
-        The transport's subscription is handler-based; this adapts it into an
-        async iterator via a queue so callers can just ``async for`` over it.
-        The underlying subscription is cancelled when iteration stops.
+        Yields ``{"header": {...}}`` dicts with the block number as an int.
+        Break out of the loop to cancel the underlying subscription.
         """
-        queue: asyncio.Queue = asyncio.Queue()
-
-        async def handler(block: dict) -> None:
-            await queue.put(block)
-
-        subscription = asyncio.create_task(
-            self.raw.subscribe_block_headers(handler, finalized_only=finalized)
-        )
         try:
-            while True:
-                getter = asyncio.create_task(queue.get())
-                done, _ = await asyncio.wait(
-                    {getter, subscription}, return_when=asyncio.FIRST_COMPLETED
-                )
-                if getter in done:
-                    yield getter.result()
-                    continue
-                getter.cancel()
-                error = subscription.exception()
-                if error is not None:
-                    raise ChainError(str(error)) from error
-                return
-        finally:
-            subscription.cancel()
+            async for header in self.raw.subscribe_heads(finalized=finalized):
+                yield {"header": header}
+        except SubstrateRequestException as error:
+            raise ChainError(str(error)) from error
 
     async def compose(self, call):
         """Compose a chain call from a generated ``Call`` (module, function, params)."""
@@ -194,18 +431,22 @@ class Substrate:
 
     async def estimate_fee(self, call, keypair) -> Balance:
         """Estimate the fee for a call without submitting it (no signature needed)."""
-        info = await self.raw.get_payment_info(call=call, keypair=keypair)
+        info = await self.raw.get_payment_info(call, keypair)
         fee = info.get("partial_fee", info.get("partialFee", 0))
         return Balance.from_rao(int(fee))
 
     async def estimate_weight(self, call, keypair) -> dict:
         """The dispatch weight ``{ref_time, proof_size}`` of a call, for multisig max_weight."""
-        info = await self.raw.get_payment_info(call=call, keypair=keypair)
+        info = await self.raw.get_payment_info(call, keypair)
         weight = info.get("weight") or {}
         return {
             "ref_time": int(weight.get("ref_time", 0)),
             "proof_size": int(weight.get("proof_size", 0)),
         }
+
+    async def account_next_index(self, address: str) -> int:
+        """Next valid nonce for an account, including transactions in the pool."""
+        return await self._read(lambda raw: raw.get_account_next_index(address))
 
     # Writes -----------------------------------------------------------------
 
@@ -225,9 +466,9 @@ class Substrate:
         encrypted and carried inside ``MevShield.submit_encrypted``.
         """
         extrinsic = await self.raw.create_signed_extrinsic(
-            call=call, keypair=keypair, nonce=nonce, era={"period": period}
+            call, keypair, nonce=nonce, era={"period": period}
         )
-        return bytes(extrinsic.data.data), "0x" + extrinsic.extrinsic_hash.hex()
+        return extrinsic.data, extrinsic.extrinsic_hash
 
     async def submit(
         self,
@@ -249,17 +490,15 @@ class Substrate:
         would wedge every subsequent submit for that account into future-nonce limbo.
         """
         substrate = self.raw
-        if nonce is None:
-            nonce = await substrate.get_account_next_index(keypair.ss58_address)
-        extrinsic_kwargs: dict[str, Any] = {"call": call, "keypair": keypair, "nonce": nonce}
-        if period is not None:
-            extrinsic_kwargs["era"] = {"period": period}
-
-        extrinsic = await substrate.create_signed_extrinsic(**extrinsic_kwargs)
-
         try:
-            receipt = await substrate.submit_extrinsic(
-                extrinsic=extrinsic,
+            extrinsic = await substrate.create_signed_extrinsic(
+                call,
+                keypair,
+                nonce=nonce,
+                era={"period": period} if period is not None else None,
+            )
+            report = await substrate.submit_extrinsic(
+                extrinsic,
                 wait_for_inclusion=wait_for_inclusion,
                 wait_for_finalization=wait_for_finalization,
             )
@@ -276,11 +515,11 @@ class Substrate:
                 error=chain_error,
             )
 
-        return await self._result_from_receipt(receipt, wait_for_inclusion or wait_for_finalization)
+        return self._result_from_report(report, wait_for_inclusion or wait_for_finalization)
 
     async def submit_signed(
         self,
-        extrinsic,
+        extrinsic: SignedExtrinsic,
         keypair,
         *,
         wait_for_inclusion: bool = True,
@@ -289,12 +528,12 @@ class Substrate:
         """Submit an already-signed extrinsic and return a typed result.
 
         Used when the extrinsic is built elsewhere (e.g. a multisig approval), so
-        the same receipt-to-``ExtrinsicResult`` decoding and nonce-cache hygiene as
-        :meth:`submit` apply without this layer re-signing the call.
+        the same outcome decoding and nonce-cache hygiene as :meth:`submit`
+        apply without this layer re-signing the call.
         """
         try:
-            receipt = await self.raw.submit_extrinsic(
-                extrinsic=extrinsic,
+            report = await self.raw.submit_extrinsic(
+                extrinsic,
                 wait_for_inclusion=wait_for_inclusion,
                 wait_for_finalization=wait_for_finalization,
             )
@@ -309,23 +548,33 @@ class Substrate:
                 error=chain_error,
             )
 
-        return await self._result_from_receipt(receipt, wait_for_inclusion or wait_for_finalization)
+        return self._result_from_report(report, wait_for_inclusion or wait_for_finalization)
 
-    async def _result_from_receipt(self, receipt, waited: bool) -> ExtrinsicResult:
-        """Turn a submission receipt into a typed :class:`ExtrinsicResult`."""
+    def _result_from_report(self, report: InclusionReport, waited: bool) -> ExtrinsicResult:
+        """Turn the transport's inclusion report into a typed :class:`ExtrinsicResult`."""
         if not waited:
             return ExtrinsicResult(success=True, message="Submitted (not waiting).")
 
-        if await receipt.is_success:
+        extrinsic_id = None
+        if report.block_number is not None and report.extrinsic_idx is not None:
+            # Index zero-padded to 4 digits, as explorers render it.
+            extrinsic_id = f"{report.block_number}-{report.extrinsic_idx:04d}"
+        explorer = (
+            explorer_extrinsic_url(self.endpoint, extrinsic_id) if extrinsic_id else None
+        )
+
+        if report.is_success:
             return ExtrinsicResult(
                 success=True,
                 message="Success",
-                block_hash=getattr(receipt, "block_hash", None),
-                fee=Balance.from_rao(await receipt.total_fee_amount),
-                events=list(await receipt.triggered_events),
+                block_hash=report.block_hash,
+                extrinsic_id=extrinsic_id,
+                explorer_url=explorer,
+                fee=Balance.from_rao(report.total_fee_amount or 0),
+                events=list(report.triggered_events),
             )
 
-        error_message = await receipt.error_message
+        error_message = report.error_message
         name = None
         if isinstance(error_message, dict):
             name = error_message.get("name")
@@ -336,29 +585,32 @@ class Substrate:
         return ExtrinsicResult(
             success=False,
             message=text,
+            block_hash=report.block_hash,
+            extrinsic_id=extrinsic_id,
+            explorer_url=explorer,
             error=ChainError(text, name),
         )
 
     # Multisig ---------------------------------------------------------------
 
-    def multisig_account(self, signatories: list[str], threshold: int):
-        """Derive the deterministic multisig ``MultiAccountId`` for a signer set."""
+    def multisig_account(self, signatories: list[str], threshold: int) -> MultisigAccount:
+        """Derive the deterministic multisig account for a signer set."""
         return self.raw.generate_multisig_account(signatories, threshold)
 
     async def submit_multisig(
         self,
         call,
         keypair,
-        multisig_account,
+        multisig_account: MultisigAccount,
         *,
         wait_for_inclusion: bool = True,
         wait_for_finalization: bool = True,
     ) -> ExtrinsicResult:
         """Record one signatory's approval of ``call`` for a multisig account.
 
-        The transport inspects on-chain approval state and composes
-        ``approve_as_multi`` (not yet at threshold) or ``as_multi`` (this approval
-        reaches the threshold, so the inner call executes). ``call`` must be a
+        The transport composes ``Multisig.as_multi`` with the full call (so the
+        opening extrinsic embeds the call bytes on-chain), carrying the existing
+        timepoint when the operation is already open. ``call`` must be a
         composed call (see :meth:`compose`).
         """
         try:
@@ -378,8 +630,3 @@ def _unwrap_key(key):
     if isinstance(key, (tuple, list)) and len(key) == 1:
         return key[0]
     return key
-
-
-def _scale_value(value):
-    """Unwrap a ScaleType (has `.value`) or pass a plain value through."""
-    return value.value if hasattr(value, "value") else value

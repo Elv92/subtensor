@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Callable, Optional
 from urllib.parse import urlparse
 
-from .bridge import DEFAULT_BRIDGE_HOST, DEFAULT_BRIDGE_PORT, BridgeServer
+from .bridge import DEFAULT_BRIDGE_HOST, DEFAULT_BRIDGE_PORT
 from .browser import open_bridge_page
 from .client import BridgeClient, BridgeError
 

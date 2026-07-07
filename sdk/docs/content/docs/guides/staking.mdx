@@ -1,0 +1,75 @@
+---
+title: Staking
+description: Back validators with TAO, manage positions across subnets, and claim root dividends.
+---
+
+Staking backs a validator (a **hotkey**) with your TAO. On a subnet, staking
+swaps TAO into the subnet's alpha at the pool price; your position's value then
+follows the pool price and the validator's performance. On the root network
+(netuid 0) stake stays TAO-denominated.
+
+## Pick a validator
+
+```bash
+subtensor query delegates --json          # all delegate hotkeys
+subtensor query delegate --hotkey 5F...   # one delegate's details
+subtensor query delegate-take --hotkey 5F...   # the fraction the delegate keeps
+```
+
+The **take** is the fraction of staking emissions the validator keeps before
+distributing the rest to its nominators.
+
+## Stake and unstake
+
+Quote first — staking is a swap, so large amounts incur slippage:
+
+```bash
+subtensor query quote-stake --netuid 1 --amount-tao 100 --json
+subtensor tx add-stake --hotkey 5F... --netuid 1 --amount-tao 100 --dry-run
+subtensor tx add-stake --hotkey 5F... --netuid 1 --amount-tao 100 -w my_coldkey
+```
+
+```python
+intent = sub.AddStake(hotkey_ss58="5F...", netuid=1, amount_tao=100)
+await client.execute(intent, wallet)
+```
+
+Exit with [`remove-stake`](/docs/tx/remove-stake) (pass `all` for the whole
+position), or exit everything at once with
+[`unstake-all`](/docs/tx/unstake-all). To bound the execution price instead of
+accepting whatever the pool gives, use
+[`add-stake-limit`](/docs/tx/add-stake-limit) /
+[`remove-stake-limit`](/docs/tx/remove-stake-limit).
+
+## Move positions without exiting
+
+- [`move-stake`](/docs/tx/move-stake) — different hotkey (and optionally
+  subnet).
+- [`swap-stake`](/docs/tx/swap-stake) — same hotkey, different subnet.
+- [`transfer-stake`](/docs/tx/transfer-stake) — different coldkey (gives the
+  position away).
+
+## Inspect what you have
+
+```bash
+subtensor stake show --hotkey 5F... --netuid 1
+subtensor query stake-for-coldkey --coldkey my_coldkey --json     # all positions
+subtensor query stake-value-for-coldkey --coldkey my_coldkey --json  # marked to TAO at spot
+```
+
+Spot valuation is `alpha × price`, excluding slippage and fees — use
+[`quote-unstake`](/docs/query/quote-unstake) for what you would actually
+receive.
+
+## Root stake and dividends
+
+Stake on the root network earns dividends from across subnets. Configure how
+payouts are denominated with
+[`set-root-claim-type`](/docs/tx/set-root-claim-type) (swap to TAO, keep as
+alpha, or per-subnet), then claim with [`claim-root`](/docs/tx/claim-root).
+Unclaimed dividends keep accruing — there is no deadline.
+
+## Automation
+
+[`set-auto-stake`](/docs/tx/set-auto-stake) makes future rewards on a subnet
+stake themselves to a hotkey of your choice instead of accumulating unstaked.

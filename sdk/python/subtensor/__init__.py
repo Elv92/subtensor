@@ -17,16 +17,41 @@ Synchronous:
     client = sub.SyncClient("finney")
     print(client.balances.get("5F...coldkey"))
     client.close()
+
+Logging:
+
+The SDK emits diagnostics through standard library loggers under the
+``subtensor.*`` namespace (e.g. ``subtensor.transport`` for connection
+lifecycle and RPC traffic). It never configures handlers, levels, or the
+root logger, so it stays silent unless your application opts in:
+
+    import logging
+
+    logging.basicConfig(level=logging.INFO)                   # everything
+    logging.getLogger("subtensor").setLevel(logging.DEBUG)    # just the SDK
 """
 
-from . import intents, wallets
+import logging as _logging
+
+from . import intents, reads, timelock, wallets
 from ._generated import calls, constants, runtime_apis as runtime_api, storage
-from .balance import Balance, UnitMismatchError, rao, tao
-from .client import BlockHeader, Client
+from ._substrate import RpcSubstrate, Substrate
+from .balance import Balance, UnitMismatchError, alpha, rao, tao
+from .client import BlockHeader, BlockInfo, Client, EpochEvent
 from .intents import REGISTRY as _INTENT_REGISTRY
 from .intents import Intent, Plan, Policy
+from .metagraph import Metagraph, MetagraphNeuron, NeuronCommitment
 from .multisig import Multisig
-from .neurons import Neuron
+from .reads import (
+    Commitment,
+    DelegatedStake,
+    DelegateInfo,
+    Neuron,
+    StakePosition,
+    StakeValuation,
+    SubnetInfo,
+    SwapQuote,
+)
 from .result import (
     BittensorError,
     ChainError,
@@ -35,7 +60,14 @@ from .result import (
     ExtrinsicResult,
     PolicyError,
 )
-from .signing import Signer, WalletSigner, public_view, resolve_signer
+from .signing import (
+    KeyedWallet,
+    Signer,
+    WalletLike,
+    WalletSigner,
+    public_view,
+    resolve_signer,
+)
 from .extension import (
     BridgeClient,
     BridgeError,
@@ -55,8 +87,13 @@ from .wallets import (
     parse_crypto_type,
 )
 from .snapshot import Snapshot
-from .subnets import SubnetInfo
 from .sync import SyncClient
+from .timelock import Timelocked, TimelockError, TimelockNotReady
+
+# Library convention (logging HOWTO): attach a NullHandler to the package
+# root logger so the SDK is silent by default (no lastResort stderr fallback)
+# while leaving the consumer's logging configuration untouched.
+_logging.getLogger(__name__).addHandler(_logging.NullHandler())
 
 # Re-export every registered intent class at the top level, derived from the
 # registry so this can never drift from the actual set of intents (the codegen
@@ -67,14 +104,32 @@ globals().update(_INTENT_EXPORTS)
 __all__ = [
     "Client",
     "SyncClient",
+    # The chain-access contract and its production (websocket RPC) backend.
+    # Client(substrate=...) accepts any Substrate implementation.
+    "Substrate",
+    "RpcSubstrate",
     "Snapshot",
     "BlockHeader",
+    "BlockInfo",
+    "EpochEvent",
     "Neuron",
+    "Metagraph",
+    "MetagraphNeuron",
+    "NeuronCommitment",
     "SubnetInfo",
     "Balance",
     "UnitMismatchError",
     "tao",
+    "alpha",
     "rao",
+    "StakePosition",
+    "StakeValuation",
+    "DelegateInfo",
+    "DelegatedStake",
+    "Commitment",
+    "SwapQuote",
+    # The read registry (client.read / client.reads is the dispatch surface)
+    "reads",
     "ExtrinsicResult",
     "BittensorError",
     "ChainError",
@@ -82,6 +137,10 @@ __all__ = [
     "ErrorCode",
     "PolicyError",
     "wallets",
+    "timelock",
+    "Timelocked",
+    "TimelockError",
+    "TimelockNotReady",
     # Generated chain vocabulary (descriptors for query/runtime/constant, and
     # raw call builders for the submit_call escape hatch)
     "storage",
@@ -95,6 +154,8 @@ __all__ = [
     "Policy",
     "Multisig",
     "Signer",
+    "KeyedWallet",
+    "WalletLike",
     "WalletSigner",
     "public_view",
     "resolve_signer",

@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from .signing import resolve_signer
+from .signing import WalletLike, resolve_signer
 
 if TYPE_CHECKING:
     from .client import Client
@@ -40,7 +40,7 @@ class Multisig:
     async def approve(
         self,
         call,
-        wallet: Any,
+        wallet: WalletLike,
         *,
         signer: str = "coldkey",
         wait_for_inclusion: bool = True,

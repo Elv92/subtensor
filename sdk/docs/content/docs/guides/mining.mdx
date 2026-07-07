@@ -1,0 +1,75 @@
+---
+title: Mining
+description: Register a hotkey on a subnet, publish your axon, and keep your UID.
+---
+
+A miner is a hotkey registered on a subnet, doing whatever work that subnet's
+incentive mechanism rewards. The chain side of mining is small: register, tell
+validators where to reach you, and don't get evicted. The work itself — the
+model, the service, the actual commodity — is defined by each subnet's own
+codebase, not by the chain.
+
+## 1. Scope the subnet
+
+```bash
+subtensor subnets list
+subtensor subnets show 1
+subtensor query subnet-registration-cost --netuid 1 --json
+subtensor query subnet-hyperparameters --netuid 1 --json   # immunity period, limits
+subtensor query metagraph --netuid 1 --json                # who you're competing with
+```
+
+## 2. Register
+
+[`burned-register`](/docs/tx/burned-register) burns the subnet's current
+registration cost from your coldkey and assigns your hotkey a **UID**:
+
+```bash
+subtensor tx burned-register --netuid 1 --dry-run -w my_coldkey
+subtensor tx burned-register --netuid 1 -w my_coldkey
+```
+
+Know before you send:
+
+- The burned TAO is **recycled, not staked** — deregistering does not refund it.
+- The cost floats with demand and is only known at execution time, so a
+  configured `Policy` spend cap blocks this call until raised.
+- On a full subnet, your registration **evicts the lowest-ranked non-immune
+  neuron** — and once your own immunity period ends, the same can happen to you
+  if you aren't earning rank.
+
+Confirm with [`uid`](/docs/query/uid) or
+[`netuids-for-hotkey`](/docs/query/netuids-for-hotkey).
+
+## 3. Publish your endpoint
+
+Validators find you through the axon info stored on chain.
+[`serve-axon`](/docs/tx/serve-axon) writes your `ip:port`; it does **not**
+start a server — running the actual service is your job:
+
+```bash
+subtensor tx serve-axon --netuid 1 --ip 203.0.113.7 --port 8091 -w my_coldkey -H my_hotkey
+```
+
+Use [`serve-axon-tls`](/docs/tx/serve-axon-tls) if peers should verify a TLS
+certificate, and [`reset-axon`](/docs/tx/reset-axon) to stop advertising.
+Re-publishing is rate-limited by the chain.
+
+## 4. Watch your standing
+
+```bash
+subtensor query metagraph --netuid 1 --json     # your rank, incentive, emission
+subtensor query blocks-since-last-update --netuid 1 --json
+subtensor query immunity-period --netuid 1
+```
+
+Rewards accrue to the hotkey as stake. Have them auto-staked to a hotkey of
+your choice with [`set-auto-stake`](/docs/tx/set-auto-stake).
+
+## Key hygiene
+
+- Sign operational calls with the hotkey; keep the coldkey off the mining box
+  entirely — use a [proxy](/docs/concepts/advanced) if the box must submit
+  coldkey-signed calls.
+- If the hotkey is compromised, [`swap-hotkey`](/docs/tx/swap-hotkey) replaces
+  it while keeping its registrations.

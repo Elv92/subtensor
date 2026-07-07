@@ -2,15 +2,17 @@
 
 Regenerate with: python -m codegen <ws-endpoint>
 Spec version: 424
+
+Runtime API method descriptors: unpack into substrate.runtime_call.
 """
-"""Runtime API method descriptors: unpack into substrate.runtime_call."""
+from typing import NamedTuple
 
 
-class Method(tuple):
+class Method(NamedTuple):
     """A (container, name) pair; unpack into query/constant calls."""
 
-    def __new__(cls, container: str, name: str):
-        return super().__new__(cls, (container, name))
+    container: str
+    name: str
 
 
 class AccountNonceApi:

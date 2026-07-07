@@ -4,6 +4,7 @@ Importing this package registers every intent. Use the concrete intent classes
 directly, or discover/build them by name via the registry helpers.
 """
 
+from ._money import ALL, UNBOUNDED, Money, Spend
 from .association import AssociateEvmKey, AssociateHotkey
 from .base import Intent
 from .batch import Batch
@@ -37,7 +38,6 @@ from .governance import (
 from .hyperparameters import OWNER_HYPERPARAMETERS, SetHyperparameter
 from .identity import SetIdentity, SetSubnetIdentity
 from .leasing import RegisterLeasedNetwork, TerminateLease
-from .liquidity import AddLiquidity, ModifyLiquidity, RemoveLiquidity
 from .lock import LockStake, MoveLock, SetPerpetualLock
 from .multisig import (
     MultisigApprove,
@@ -85,6 +85,12 @@ __all__ = [
     "Intent",
     "Plan",
     "Policy",
+    # Money vocabulary: what money fields accept (Money), the drain sentinel
+    # (ALL), and the spend contract for policy checks (Spend / UNBOUNDED).
+    "Money",
+    "Spend",
+    "ALL",
+    "UNBOUNDED",
     "REGISTRY",
     "register",
     "build",
@@ -119,9 +125,6 @@ __all__ = [
     "SetWeights",
     "CommitWeights",
     "RevealWeights",
-    "AddLiquidity",
-    "ModifyLiquidity",
-    "RemoveLiquidity",
     "LockStake",
     "SetPerpetualLock",
     "MoveLock",

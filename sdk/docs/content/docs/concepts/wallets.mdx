@@ -1,0 +1,84 @@
+---
+title: Wallets and keys
+description: Coldkeys, hotkeys, creation and recovery, signing, and how address arguments resolve.
+---
+
+A Bittensor wallet is a pair of keys stored on disk (default
+`~/.bittensor/wallets/<wallet-name>/`):
+
+- The **coldkey** holds funds and signs financial operations: transfers,
+  staking, registration, subnet ownership. It is encrypted at rest with a
+  password. Keep it offline where possible — [proxies](/docs/concepts/advanced)
+  exist precisely so day-to-day operations don't need it.
+- The **hotkey** is your operational identity on subnets: it gets the UID when
+  you register, signs weights and axon serving, and is safe to keep on a
+  running machine. One wallet can hold many hotkeys.
+
+## Create, import, inspect
+
+```bash
+subtensor wallet create -w my_coldkey        # new coldkey + hotkey (prints mnemonics once — save them)
+subtensor wallet new-hotkey -w my_coldkey -H my_hotkey
+subtensor wallet regen-coldkey -w my_coldkey # recover from mnemonic (prompted securely)
+subtensor wallet regen-hotkey -w my_coldkey
+subtensor wallet list                        # wallets on disk, multisigs, address book
+subtensor wallet show                        # public keys + crypto schemes
+subtensor wallet balance my_coldkey          # free TAO + stake marked to TAO
+```
+
+The same flows exist in Python under `sub.wallets` (`create`, `regen_coldkey`,
+`regen_hotkey`, `list_wallets`, `sign_message`, `verify_message`, ...). Key
+material itself is handled by the `bittensor_wallet` package; the SDK adds thin
+conveniences.
+
+```python
+from bittensor_wallet import Wallet
+wallet = Wallet(name="my_coldkey", hotkey="my_hotkey")
+```
+
+## Signing and verification
+
+```bash
+subtensor wallet sign --message "hello" -w my_coldkey            # coldkey signature
+subtensor wallet sign --message "hello" --use-hotkey -w my_coldkey
+subtensor wallet verify --message "hello" --signature 0x... --ss58 5F...
+```
+
+Every transaction declares which key signs it — the `signer` column on each
+[transaction page](/docs/tx). Staking and transfers are coldkey-signed; weights
+and serving are hotkey-signed.
+
+## How address arguments resolve
+
+Any address option in the CLI (`--dest`, `--hotkey`, `--coldkey`, ...) accepts
+three forms:
+
+- a raw **ss58 address**;
+- a **local name** — hotkey options take `HOTKEY` or `WALLET/HOTKEY`, coldkey
+  options take a wallet name (its coldkey is used), and address-book or
+  proxy-book names resolve too;
+- **omitted** — `--hotkey` / `--coldkey` fall back to the configured wallet's
+  own keys. Destination-style options never default.
+
+```bash
+subtensor query hotkey-owner --hotkey my_coldkey/my_hotkey
+subtensor wallet balance my_coldkey
+```
+
+## Key rotation and recovery
+
+- [`swap-hotkey`](/docs/tx/swap-hotkey) replaces a registered hotkey with a new
+  one, keeping its registrations.
+- Coldkey swap is a two-step, delayed process for compromised coldkeys:
+  [`announce-coldkey-swap`](/docs/tx/announce-coldkey-swap), then execute with
+  [`swap-coldkey-announced`](/docs/tx/swap-coldkey-announced) after the delay.
+  Check a pending announcement with the
+  [`coldkey-swap-announcement`](/docs/query/coldkey-swap-announcement) read.
+
+## Non-interactive unlock
+
+For automation, the coldkey password can come from the environment
+(`BT_PW_<PATH>` variables via `bittensor_wallet`), a password file, or the
+macOS Keychain (`subtensor wallet keychain`). A browser-extension signer is
+also available so the coldkey never touches the machine running the CLI — see
+`--signer extension`.

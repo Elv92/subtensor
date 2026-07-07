@@ -12,7 +12,7 @@ import asyncio
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from subtensor._transport import AsyncSubstrateInterface
+from subtensor._transport import SubstrateConnection
 from subtensor.settings import SS58_FORMAT, TYPE_REGISTRY
 
 
@@ -56,71 +56,44 @@ class MetadataIR:
         return asdict(self)
 
 
-def _docs(item) -> str:
-    docs = getattr(item, "docs", None) or []
-    return " ".join(d.strip() for d in docs).strip()
-
-
-def parse_runtime(runtime) -> MetadataIR:
-    """Build the IR from a transport ``Runtime`` object."""
-    pallets: list[PalletIR] = []
-    for pallet in runtime.metadata.pallets:
-        index = int(pallet.value["index"])
-
-        errors: list[ErrorIR] = []
-        for error_index, error in enumerate(pallet.errors or []):
-            errors.append(ErrorIR(index=error_index, name=error.name, docs=_docs(error)))
-
-        calls: list[CallIR] = []
-        for call in pallet.calls or []:
-            args = [arg.name for arg in (call.args or [])]
-            calls.append(CallIR(name=call.name, args=args, docs=_docs(call)))
-
-        # Skip pseudo-entries like `:__STORAGE_VERSION__:`.
-        storage = [item.name for item in (pallet.storage or []) if ":" not in item.name]
-        constants = [constant.name for constant in (pallet.constants or [])]
-
-        pallets.append(
-            PalletIR(
-                name=pallet.name,
-                index=index,
-                calls=calls,
-                errors=errors,
-                storage=storage,
-                constants=constants,
-            )
+def _from_transport_ir(ir) -> MetadataIR:
+    """Map the transport's metadata IR into this module's (serializable) IR."""
+    pallets = [
+        PalletIR(
+            name=pallet.name,
+            index=int(pallet.index),
+            calls=[
+                CallIR(name=call.name, args=[arg.name for arg in call.args], docs=call.docs)
+                for call in pallet.calls
+            ],
+            errors=[
+                ErrorIR(index=error_index, name=error.name, docs=error.docs)
+                for error_index, error in enumerate(pallet.errors)
+            ],
+            storage=list(pallet.storage_names),
+            constants=list(pallet.constant_names),
         )
-
-    runtime_apis: list[RuntimeApiIR] = []
-    metadata_v15 = getattr(runtime, "metadata_v15", None)
-    if metadata_v15 is not None:
-        v15 = metadata_v15.value[1]["V15"]
-        for api in v15.get("apis", []):
-            methods = [method["name"] for method in api.get("methods", [])]
-            runtime_apis.append(RuntimeApiIR(name=api["name"], methods=methods))
-
+        for pallet in ir.pallets
+    ]
+    apis: dict[str, list[str]] = {}
+    for method in ir.runtime_api_methods:
+        apis.setdefault(method.api, []).append(method.method)
+    runtime_apis = [RuntimeApiIR(name=name, methods=methods) for name, methods in apis.items()]
     return MetadataIR(
-        spec_version=int(runtime.runtime_version),
-        pallets=pallets,
-        runtime_apis=runtime_apis,
+        spec_version=int(ir.spec_version), pallets=pallets, runtime_apis=runtime_apis
     )
 
 
 async def dump_from_node(endpoint: str) -> MetadataIR:
     """Connect to a node and parse its current runtime metadata into the IR."""
-    substrate = AsyncSubstrateInterface(
-        url=endpoint,
-        ss58_format=SS58_FORMAT,
-        type_registry=TYPE_REGISTRY,
-        use_remote_preset=True,
-        chain_name="Bittensor",
+    connection = SubstrateConnection(
+        endpoint, ss58_format=SS58_FORMAT, type_registry=TYPE_REGISTRY
     )
-    await substrate.initialize()
+    await connection.initialize()
     try:
-        runtime = await substrate.init_runtime()
-        return parse_runtime(runtime)
+        return _from_transport_ir(await connection.metadata_ir())
     finally:
-        await substrate.close()
+        await connection.close()
 
 
 def dump(endpoint: str) -> MetadataIR:

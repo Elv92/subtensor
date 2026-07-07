@@ -2,9 +2,11 @@
 
 - ``--drift <endpoint>``: regenerate from a live node and fail if the committed
   output differs (the "generated code must match the chain" gate).
-- ``--names``: assert every error name the SDK classifies still exists in the
-  generated catalog, so a runtime rename is caught here rather than silently
-  degrading error codes to UNKNOWN.
+- ``--names``: assert the error classification and the generated catalog agree
+  in both directions — every name the SDK classifies still exists on chain (a
+  rename is caught rather than silently degrading to UNKNOWN), and every name
+  on chain classifies to a semantic code (a new runtime error must be
+  deliberately mapped before it can ship).
 
 Exit code 0 = ok, 1 = mismatch.
 """
@@ -63,10 +65,10 @@ RAW_ONLY: dict[str, set[str]] = {
         "dissolve_network",
         "root_dissolve_network",
         "set_activity_cutoff_factor",
-        # legacy / superseded weight paths (mechanism variants are wrapped)
+        # legacy / superseded weight paths (mechanism variants are wrapped;
+        # reveal_weights is wrapped by the RevealWeights intent for salt commits)
         "set_weights",
         "commit_weights",
-        "reveal_weights",
         "commit_mechanism_weights",
         "reveal_mechanism_weights",
         "commit_crv3_mechanism_weights",
@@ -214,14 +216,27 @@ def check_coverage() -> int:
 
 def check_names() -> int:
     from subtensor._generated.errors import ERRORS
-    from subtensor.result import _NAME_TO_CODE
+    from subtensor.error_map import NAME_TO_CODE, ErrorCode
+    from subtensor.result import classify_error
 
     catalog = {info.name for info in ERRORS.values()}
-    missing = sorted(name for name in _NAME_TO_CODE if name not in catalog)
-    if missing:
-        print(f"STALE: error names classified by the SDK but absent from chain: {missing}")
+    stale = sorted(name for name in NAME_TO_CODE if name not in catalog)
+    unclassified = sorted(
+        name for name in catalog if classify_error("", name) is ErrorCode.UNKNOWN
+    )
+    if stale:
+        print(f"STALE: error names classified by the SDK but absent from chain: {stale}")
+    if unclassified:
+        print(
+            "UNCLASSIFIED: chain error names with no semantic code "
+            f"(add them to subtensor/error_map.py): {unclassified}"
+        )
+    if stale or unclassified:
         return 1
-    print(f"names ok: all {len(_NAME_TO_CODE)} classified error names exist in the catalog")
+    print(
+        f"names ok: all {len(catalog)} chain error names classify to a semantic code "
+        "and no mapped name is stale"
+    )
     return 0
 
 

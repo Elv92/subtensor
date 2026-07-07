@@ -2,15 +2,17 @@
 
 Regenerate with: python -m codegen <ws-endpoint>
 Spec version: 424
+
+Storage item descriptors: unpack into substrate.query/query_map.
 """
-"""Storage item descriptors: unpack into substrate.query/query_map."""
+from typing import NamedTuple
 
 
-class Item(tuple):
+class Item(NamedTuple):
     """A (container, name) pair; unpack into query/constant calls."""
 
-    def __new__(cls, container: str, name: str):
-        return super().__new__(cls, (container, name))
+    container: str
+    name: str
 
 
 class System:

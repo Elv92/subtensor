@@ -8,6 +8,8 @@ adds the submission (and refuses if policy is violated).
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 from typing import Any, Optional
 
 from bittensor_drand import encrypt_mlkem768
@@ -21,7 +23,31 @@ from .intents.base import BuiltCall
 from .intents.proxy import check_proxy_type
 from .result import ChainError, ExtrinsicResult, PolicyError, chain_error_from_dispatch
 from .settings import DEFAULT_ERA_PERIOD, MEV_SHIELD_ERA_PERIOD
-from .signing import public_view, resolve_signer
+from .signing import WalletLike, public_view, resolve_signer
+
+# Transaction-pool rejections that resolve themselves within a block or so (a
+# competing extrinsic at the same nonce, or a race against pool state). Worth
+# resubmitting; a fresh nonce is fetched on every attempt.
+_TRANSIENT_SUBSTRINGS = (
+    "priority is too low",
+    "transaction is outdated",
+    "stale",
+)
+
+
+def _is_transient(result: ExtrinsicResult) -> bool:
+    message = (result.message or "").lower()
+    return any(needle in message for needle in _TRANSIENT_SUBSTRINGS)
+
+
+def _find_event(events: list, module_id: str, event_id: str) -> Optional[Any]:
+    """The attributes of the first matching triggered event, or None."""
+    for entry in events:
+        record = entry.value if hasattr(entry, "value") else entry
+        event = record.get("event", record) if isinstance(record, dict) else {}
+        if event.get("module_id") == module_id and event.get("event_id") == event_id:
+            return event.get("attributes")
+    return None
 
 
 def _proxy_inner_error(events: list) -> Optional[Any]:
@@ -30,16 +56,38 @@ def _proxy_inner_error(events: list) -> Optional[Any]:
     A proxied extrinsic *succeeds* even when the wrapped call fails — the inner
     outcome is only reported through this event, so it must be checked.
     """
-    for entry in events:
-        record = entry.value if hasattr(entry, "value") else entry
-        event = record.get("event", record) if isinstance(record, dict) else {}
-        if event.get("module_id") != "Proxy" or event.get("event_id") != "ProxyExecuted":
-            continue
-        attributes = event.get("attributes")
-        result = attributes.get("result") if isinstance(attributes, dict) else attributes
-        if isinstance(result, dict) and "Err" in result:
-            return result["Err"]
+    attributes = _find_event(events, "Proxy", "ProxyExecuted")
+    if attributes is None:
+        return None
+    result = attributes.get("result") if isinstance(attributes, dict) else attributes
+    if isinstance(result, dict) and "Err" in result:
+        return result["Err"]
     return None
+
+
+def _pure_created_data(result: ExtrinsicResult) -> dict[str, Any]:
+    """The spawned account and creation coordinates of a ``create_pure_proxy``.
+
+    The chain only reports the derived pure address through the
+    ``Proxy.PureCreated`` event, and ``kill_pure`` later demands the creation
+    block height and extrinsic index — so all three are captured here, where
+    the submission receipt still has them.
+    """
+    data: dict[str, Any] = {}
+    attributes = _find_event(result.events, "Proxy", "PureCreated")
+    if isinstance(attributes, dict):
+        if attributes.get("pure") is not None:
+            data["pure_proxy"] = str(attributes["pure"])
+        if attributes.get("who") is not None:
+            data["spawner"] = str(attributes["who"])
+    if result.extrinsic_id:
+        height, _, ext_index = result.extrinsic_id.partition("-")
+        try:
+            data["height"] = int(height)
+            data["ext_index"] = int(ext_index)
+        except ValueError:
+            pass  # cosmetic identifier in an unexpected shape
+    return data
 
 
 class Executor:
@@ -48,15 +96,41 @@ class Executor:
         self.policy = policy
 
     @staticmethod
-    def _public_keypair(wallet: Any, signer: str):
+    def _public_keypair(wallet: WalletLike, signer: str):
         """The signer's public keypair — enough to address and to estimate fees,
         without unlocking the private coldkey."""
         return public_view(wallet, signer)
 
+    # Policy: the one enforcement point ---------------------------------------
+    #
+    # Every path that can reach the chain funnels its policy decision through
+    # these helpers, so a new Policy rule is honored everywhere or nowhere.
+
+    def _active_policy(self, policy: Optional[Policy]) -> Optional[Policy]:
+        """The call-level override, else the client-wide policy."""
+        return policy or self.policy
+
+    def _violations(
+        self, intent: Intent, fee: Any, policy: Optional[Policy]
+    ) -> list[str]:
+        active = self._active_policy(policy)
+        return active.check(intent, fee) if active else []
+
+    def _enforce(self, intent: Intent, fee: Any, policy: Optional[Policy]) -> None:
+        violations = self._violations(intent, fee, policy)
+        if violations:
+            raise PolicyError(violations)
+
+    def _enforce_raw_call(self, policy: Optional[Policy]) -> None:
+        active = self._active_policy(policy)
+        violations = active.check_raw_call() if active else []
+        if violations:
+            raise PolicyError(violations)
+
     async def plan(
         self,
         intent: Intent,
-        wallet: Any,
+        wallet: WalletLike,
         *,
         policy: Optional[Policy] = None,
         proxy_for: Optional[str] = None,
@@ -98,8 +172,7 @@ class Executor:
         effects = list(await intent.effects(self.substrate, origin))
         if proxy_for is not None:
             effects.append(f"dispatched via proxy as {proxy_for} (signed by {signer_address})")
-        active_policy = policy or self.policy
-        violations = active_policy.check(intent, fee) if active_policy else []
+        violations = self._violations(intent, fee, policy)
 
         return Plan(
             op=intent.op,
@@ -117,7 +190,7 @@ class Executor:
     async def execute(
         self,
         intent: Intent,
-        wallet: Any,
+        wallet: WalletLike,
         *,
         policy: Optional[Policy] = None,
         proxy_for: Optional[str] = None,
@@ -125,6 +198,7 @@ class Executor:
         period: Optional[int] = DEFAULT_ERA_PERIOD,
         wait_for_inclusion: bool = True,
         wait_for_finalization: bool = True,
+        retries: int = 0,
     ) -> ExtrinsicResult:
         """Plan, then sign and submit. Raises ``PolicyError`` if the plan violates
         policy. (To preview without submitting, call ``plan`` instead.)
@@ -132,6 +206,11 @@ class Executor:
         With ``proxy_for``, the local wallet key signs a ``Proxy.proxy`` wrapper
         and the call dispatches as ``proxy_for`` — the real account's key never
         touches this machine (see ``plan``).
+
+        ``retries`` resubmits (up to that many extra times, one block apart) when
+        the transaction pool rejects with a transient error such as a nonce race
+        or "priority is too low". Chain-side dispatch failures are never retried —
+        they would fail identically.
         """
         plan = await self.plan(
             intent, wallet, policy=policy, proxy_for=proxy_for, proxy_type=proxy_type
@@ -140,32 +219,46 @@ class Executor:
             raise PolicyError(plan.violations)
 
         keypair = resolve_signer(wallet, intent.signer)
-        result = await self.substrate.submit(
-            plan.call,
-            keypair,
-            period=period,
-            wait_for_inclusion=wait_for_inclusion,
-            wait_for_finalization=wait_for_finalization,
-        )
+        attempts = max(0, int(retries)) + 1
+        for attempt in range(attempts):
+            result = await self.substrate.submit(
+                plan.call,
+                keypair,
+                period=period,
+                wait_for_inclusion=wait_for_inclusion,
+                wait_for_finalization=wait_for_finalization,
+            )
+            if result.success or attempt == attempts - 1 or not _is_transient(result):
+                break
+            # One block, as the chain measures it (0.25s on fast-blocks localnets).
+            await asyncio.sleep(await self.substrate.block_time())
         if proxy_for is not None and result.success:
             inner_error = _proxy_inner_error(result.events)
             if inner_error is not None:
                 error = chain_error_from_dispatch(inner_error)
-                result.success = False
-                result.message = f"proxied call failed: {error.message}"
-                result.error = error
-        if result.success and plan.extras:
-            result.data.update(plan.extras)
+                result = replace(
+                    result,
+                    success=False,
+                    message=f"proxied call failed: {error.message}",
+                    error=error,
+                )
+        if result.success:
+            data = dict(result.data)
+            if intent.op == "create_pure_proxy":
+                data.update(_pure_created_data(result))
+            data.update(plan.extras)
+            if data != result.data:
+                result = replace(result, data=data)
         return result
 
-    async def execute_tool(self, op: str, args: dict, wallet: Any, **kwargs) -> ExtrinsicResult:
+    async def execute_tool(self, op: str, args: dict, wallet: WalletLike, **kwargs) -> ExtrinsicResult:
         """Build an intent by name from a dict of args, then execute it."""
         return await self.execute(build_intent(op, args), wallet, **kwargs)
 
     async def submit_shielded(
         self,
         intent: Intent,
-        wallet: Any,
+        wallet: WalletLike,
         *,
         policy: Optional[Policy] = None,
         period: int = MEV_SHIELD_ERA_PERIOD,
@@ -182,18 +275,14 @@ class Executor:
         """
         built = await intent.build(self.substrate, wallet)
         call = built.call if isinstance(built, BuiltCall) else built
-        active_policy = policy or self.policy
-        if active_policy is not None:
-            violations = active_policy.check(intent, None)
-            if violations:
-                raise PolicyError(violations)
+        self._enforce(intent, None, policy)
 
         pubkey = await self.substrate.mev_next_key()
         if not pubkey:
             raise ChainError("MEV Shield NextKey not available; is the MevShield pallet active?")
 
         keypair = resolve_signer(wallet, intent.signer)
-        nonce = await self.substrate.raw.get_account_next_index(keypair.ss58_address)
+        nonce = await self.substrate.account_next_index(keypair.ss58_address)
         inner_bytes, inner_hash = await self.substrate.sign_extrinsic(
             call, keypair, nonce=nonce + 1, period=period
         )
@@ -210,13 +299,16 @@ class Executor:
             wait_for_finalization=wait_for_finalization,
         )
         if result.success:
-            result.data.update({"shielded": True, "inner_extrinsic_hash": inner_hash})
+            result = replace(
+                result,
+                data={**result.data, "shielded": True, "inner_extrinsic_hash": inner_hash},
+            )
         return result
 
     async def submit_call(
         self,
         call,
-        wallet: Any,
+        wallet: WalletLike,
         *,
         signer: str = "coldkey",
         policy: Optional[Policy] = None,
@@ -232,11 +324,7 @@ class Executor:
         policy sets ``allow_raw_calls=True``. No policy means no restriction,
         exactly as for intents.
         """
-        active_policy = policy or self.policy
-        if active_policy is not None and not active_policy.allow_raw_calls:
-            raise PolicyError(
-                ["raw call submission is disabled by policy (set allow_raw_calls=True)"]
-            )
+        self._enforce_raw_call(policy)
         composed = await self.substrate.compose(call)
         keypair = resolve_signer(wallet, signer)
         return await self.substrate.submit(

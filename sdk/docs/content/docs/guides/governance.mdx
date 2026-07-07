@@ -1,0 +1,39 @@
+---
+title: Governance
+description: The root network, the senate, and how proposals are voted on.
+---
+
+Bittensor governance runs through the **root network** (netuid 0) and the
+**senate**.
+
+## The root network
+
+Registration on root is stake-based, not burn-based:
+[`root-register`](/docs/tx/root-register) joins a hotkey, and placement depends
+on the stake behind it — root slots are limited, so joining a full root network
+evicts the member with the least stake. The top root members by stake form the
+senate.
+
+Root stake also earns cross-subnet dividends; see
+[Staking](/docs/guides/staking#root-stake-and-dividends) for claiming.
+
+## Voting
+
+Senate members vote on open proposals with
+[`senate-vote`](/docs/tx/senate-vote) — signed by the **hotkey**, since senate
+membership is tied to the hotkey:
+
+```bash
+subtensor tx senate-vote --proposal-hash 0x... --index 3 --approve true -w my_coldkey -H my_hotkey
+```
+
+Votes matter until the proposal closes. Proposal state lives in the chain's
+triumvirate/senate storage, reachable through the
+[generic accessors](/docs/concepts/client#three-levels-of-reading) if no read
+wraps what you need.
+
+## Root claims
+
+Configure how root dividends pay out with
+[`set-root-claim-type`](/docs/tx/set-root-claim-type) and collect them with
+[`claim-root`](/docs/tx/claim-root).

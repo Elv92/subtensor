@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Optional
 
 import typer
 
@@ -18,7 +17,7 @@ from ...extension import (
     stop_bridge_daemon,
 )
 from ..context import AppContext, ctx_of
-from ..globals import with_globals
+from ..globals import with_extension_globals, with_globals
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -65,13 +64,21 @@ def stop(ctx: typer.Context):
 
 
 @app.command("accounts")
-@with_globals
+@with_extension_globals
 def accounts(
     ctx: typer.Context,
-    host: str = typer.Option(DEFAULT_BRIDGE_HOST, "--host"),
-    port: int = typer.Option(DEFAULT_BRIDGE_PORT, "--port"),
+    host: str = typer.Option(
+        DEFAULT_BRIDGE_HOST, "--host", help="Bridge bind address, used if the bridge is started."
+    ),
+    port: int = typer.Option(
+        DEFAULT_BRIDGE_PORT, "--port", help="Bridge listen port, used if the bridge is started."
+    ),
 ):
-    """List accounts exposed by connected browser extensions."""
+    """List accounts exposed by connected browser extensions.
+
+    Starts the local bridge if it is not already running and may open the
+    bridge page in your browser so the extension can connect.
+    """
     app_ctx: AppContext = ctx_of(ctx)
 
     async def _list() -> list[dict[str, str]]:
@@ -102,11 +109,9 @@ def accounts(
         typer.echo(json.dumps(rows, indent=2))
         return
 
-    if not rows:
-        app_ctx.output.message("no extension accounts found")
-        return
-
-    for row in rows:
-        app_ctx.output.message(
-            f"{row['name']}  {row['address']}  ({row['source']}, {row['type']})"
-        )
+    app_ctx.output.table(
+        "extension accounts",
+        ["name", "address", "source", "type"],
+        [[row["name"], row["address"], row["source"], row["type"]] for row in rows],
+        rows,
+    )

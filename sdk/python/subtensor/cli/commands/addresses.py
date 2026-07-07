@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import typer
 from bittensor_wallet.utils import is_valid_ss58_address
 
@@ -15,14 +13,6 @@ app = typer.Typer(
     no_args_is_help=True,
     help="Save and reuse named ss58 addresses (for multisig signers, destinations, etc.).",
 )
-
-
-def _display_path(path: Path) -> str:
-    text = str(path.expanduser())
-    home = str(Path.home())
-    if text.startswith(home):
-        return "~" + text[len(home) :]
-    return text
 
 
 def _save(app_ctx: AppContext, name: str, ss58: str, note: str) -> None:
@@ -66,22 +56,7 @@ def save(
 def list_addresses(ctx: typer.Context):
     """List saved address-book entries."""
     app_ctx: AppContext = ctx_of(ctx)
-    entries = cfg.load_addresses()
-    path = cfg.addresses_path()
-    if app_ctx.output.json_mode:
-        app_ctx.output.value({"path": str(path), "addresses": entries})
-        return
-    if not entries:
-        app_ctx.output.detail("address book", {"path": _display_path(path), "entries": 0})
-        return
-    rows = [
-        [entry.get("name", ""), entry.get("address", ""), entry.get("note", "") or "—"]
-        for entry in entries
-    ]
-    app_ctx.output.table("address book", ["name", "address", "note"], rows, entries)
-    app_ctx.output.message(
-        f"  {_display_path(path)}  ·  {len(entries)} entr{'y' if len(entries) == 1 else 'ies'}"
-    )
+    app_ctx.output.address_list(cfg.addresses_path(), cfg.load_addresses())
 
 
 @app.command("show")

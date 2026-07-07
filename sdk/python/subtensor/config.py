@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -12,6 +13,17 @@ DEFAULT_PROXIES_PATH = Path.home() / ".bittensor" / "subtensor_proxies.json"
 DEFAULT_ADDRESSES_PATH = Path.home() / ".bittensor" / "subtensor_addresses.json"
 DEFAULT_MULTISIGS_PATH = Path.home() / ".bittensor" / "subtensor_multisigs.json"
 DEFAULT_MULTISIG_CACHE_PATH = Path.home() / ".bittensor" / "subtensor_multisig_cache.json"
+DEFAULT_SUBNET_NAMES_PATH = Path.home() / ".bittensor" / "subtensor_subnet_names.json"
+DEFAULT_TOKEN_SYMBOLS_PATH = Path.home() / ".bittensor" / "subtensor_token_symbols.json"
+
+# Cached subnet names older than this are refreshed on the next connected
+# command. Names change rarely; a day of staleness is invisible in practice.
+SUBNET_NAMES_TTL_SECONDS = 24 * 3600
+
+# Token symbols are registered once per subnet and essentially never change,
+# so the cache saves a full storage-map scan on every connect and only
+# refreshes weekly (a new subnet's symbol shows up on the next refresh).
+TOKEN_SYMBOLS_TTL_SECONDS = 7 * 24 * 3600
 
 # Settable keys and the type each value coerces to.
 SETTABLE: dict[str, type] = {
@@ -23,6 +35,17 @@ SETTABLE: dict[str, type] = {
     "quiet": bool,
     "signer_address": str,
     "extension_browser": str,
+    # Comma-separated ws(s):// endpoint pools. Unset -> the network's public
+    # defaults (settings.FALLBACK_ENDPOINTS / ARCHIVE_ENDPOINTS); "none" ->
+    # pinned to the primary endpoint only.
+    "fallback_endpoints": str,
+    "archive_endpoints": str,
+    # Never give up on connection failures; keep cycling the endpoint pool.
+    "retry_forever": bool,
+    # Default account for --proxy-for on every transaction command (ss58 or a
+    # proxy-book / address-book / wallet name). Pass `--proxy-for self` to
+    # bypass it for one command.
+    "proxy_for": str,
 }
 
 
@@ -122,6 +145,14 @@ def add_proxy(entry: dict[str, Any]) -> dict[str, Any]:
     entries.append(entry)
     save_proxies(entries)
     return entry
+
+
+def get_proxy(name: str) -> Optional[dict[str, Any]]:
+    """The proxy-book entry named ``name``, or None."""
+    for entry in load_proxies():
+        if entry.get("name") == name:
+            return entry
+    return None
 
 
 def remove_proxy(name: str) -> bool:
@@ -282,6 +313,128 @@ def save_multisig_cache(data: dict[str, Any]) -> Path:
     path = multisig_cache_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(dict(sorted(data.items())), indent=2) + "\n")
+    return path
+
+
+# --- Subnet-name cache (netuid -> registered name, per network) --------------
+#
+# Display-only: lets prompts and summaries label netuids ("4 (Targon)") without
+# a chain round-trip. Refreshed opportunistically whenever a command connects.
+
+
+def subnet_names_path() -> Path:
+    return Path(os.getenv("SUBTENSOR_SUBNET_NAMES_CACHE") or DEFAULT_SUBNET_NAMES_PATH)
+
+
+def _load_subnet_names_file() -> dict[str, Any]:
+    path = subnet_names_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_subnet_names(network: str) -> dict[int, str]:
+    """Cached netuid -> subnet-name map for ``network`` ({} when never fetched)."""
+    entry = _load_subnet_names_file().get(network)
+    if not isinstance(entry, dict):
+        return {}
+    names = entry.get("names")
+    if not isinstance(names, dict):
+        return {}
+    out: dict[int, str] = {}
+    for key, value in names.items():
+        try:
+            out[int(key)] = str(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def subnet_names_fresh(network: str) -> bool:
+    """Whether the cached names for ``network`` are within the refresh TTL."""
+    entry = _load_subnet_names_file().get(network)
+    if not isinstance(entry, dict):
+        return False
+    fetched_at = entry.get("fetched_at")
+    return isinstance(fetched_at, (int, float)) and (
+        time.time() - fetched_at < SUBNET_NAMES_TTL_SECONDS
+    )
+
+
+def save_subnet_names(network: str, names: dict[int, str]) -> Path:
+    data = _load_subnet_names_file()
+    data[network] = {
+        "fetched_at": int(time.time()),
+        "names": {str(netuid): name for netuid, name in sorted(names.items())},
+    }
+    path = subnet_names_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    return path
+
+
+# --- Token-symbol cache (netuid -> chain-registered symbol, per network) -----
+#
+# Display-only, like the subnet-name cache: lets Balance render each subnet's
+# real symbol without a full storage-map scan on every connect.
+
+
+def token_symbols_path() -> Path:
+    return Path(os.getenv("SUBTENSOR_TOKEN_SYMBOLS_CACHE") or DEFAULT_TOKEN_SYMBOLS_PATH)
+
+
+def _load_token_symbols_file() -> dict[str, Any]:
+    path = token_symbols_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_token_symbols(network: str) -> dict[int, str]:
+    """Cached netuid -> token-symbol map for ``network`` ({} when never fetched)."""
+    entry = _load_token_symbols_file().get(network)
+    if not isinstance(entry, dict):
+        return {}
+    symbols = entry.get("symbols")
+    if not isinstance(symbols, dict):
+        return {}
+    out: dict[int, str] = {}
+    for key, value in symbols.items():
+        try:
+            out[int(key)] = str(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def token_symbols_fresh(network: str) -> bool:
+    """Whether the cached symbols for ``network`` are within the refresh TTL."""
+    entry = _load_token_symbols_file().get(network)
+    if not isinstance(entry, dict):
+        return False
+    fetched_at = entry.get("fetched_at")
+    return isinstance(fetched_at, (int, float)) and (
+        time.time() - fetched_at < TOKEN_SYMBOLS_TTL_SECONDS
+    )
+
+
+def save_token_symbols(network: str, symbols: dict[int, str]) -> Path:
+    data = _load_token_symbols_file()
+    data[network] = {
+        "fetched_at": int(time.time()),
+        "symbols": {str(netuid): symbol for netuid, symbol in sorted(symbols.items())},
+    }
+    path = token_symbols_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n")
     return path
 
 

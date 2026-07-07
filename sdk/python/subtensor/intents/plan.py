@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from ..balance import Balance
+from ._money import UNBOUNDED, Money, tao_amount
 from .base import Intent
 
 
@@ -19,24 +20,46 @@ from .base import Intent
 class Policy:
     """Safety limits enforced when an intent is executed.
 
-    All limits are optional; an unset limit is not enforced.
+    All limits are optional; an unset limit is not enforced. Money limits
+    accept a number, a decimal string, or a TAO ``Balance``, and are
+    normalized to an exact ``Balance`` at construction — the comparisons that
+    guard real money are integer rao, never floats.
     """
 
-    max_fee_tao: Optional[float] = None
-    max_spend_tao: Optional[float] = None
+    max_fee_tao: Optional[Money] = None
+    max_spend_tao: Optional[Money] = None
     allowed_netuids: Optional[list[int]] = None
     # Raw calls (client.submit_call) bypass intent preview, so a policy can't
     # bound their spend or netuids. They are therefore refused outright unless
     # the policy explicitly opts in.
     allow_raw_calls: bool = False
 
+    def __post_init__(self):
+        if self.max_fee_tao is not None:
+            self.max_fee_tao = tao_amount(self.max_fee_tao)
+        if self.max_spend_tao is not None:
+            self.max_spend_tao = tao_amount(self.max_spend_tao)
+
+    def check_raw_call(self) -> list[str]:
+        """Violations for a raw call (``client.submit_call``), which has no intent
+        to inspect — so it is refused outright unless ``allow_raw_calls`` opts in."""
+        if self.allow_raw_calls:
+            return []
+        return ["raw call submission is disabled by policy (set allow_raw_calls=True)"]
+
     def check(self, intent: Intent, fee: Optional[Balance]) -> list[str]:
         violations: list[str] = []
-        if self.max_fee_tao is not None and fee is not None and fee.tao > self.max_fee_tao:
-            violations.append(f"fee {fee.tao} TAO exceeds max_fee_tao {self.max_fee_tao}")
-        spend = intent.spend_tao()
-        if self.max_spend_tao is not None and spend > self.max_spend_tao:
-            violations.append(f"spend {spend} TAO exceeds max_spend_tao {self.max_spend_tao}")
+        if self.max_fee_tao is not None and fee is not None and fee > self.max_fee_tao:
+            violations.append(f"fee {fee} exceeds max_fee_tao {self.max_fee_tao}")
+        if self.max_spend_tao is not None:
+            spend = intent.spend()
+            if spend is UNBOUNDED:
+                violations.append(
+                    f"{intent.op} spends an amount that cannot be bounded before "
+                    f"execution; max_spend_tao {self.max_spend_tao} blocks it"
+                )
+            elif spend is not None and spend > self.max_spend_tao:
+                violations.append(f"spend {spend} exceeds max_spend_tao {self.max_spend_tao}")
         if self.allowed_netuids is not None:
             allowed = set(self.allowed_netuids)
             if intent.affects_all_subnets():

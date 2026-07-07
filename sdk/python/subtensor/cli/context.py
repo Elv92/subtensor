@@ -20,7 +20,7 @@ from .. import config as cfg
 from .. import wallets
 from ..client import Client
 from ..extension.client import BridgeError
-from ..result import BittensorError
+from ..result import BittensorError, ExtrinsicResult
 from .output import Output
 
 T = TypeVar("T")
@@ -37,7 +37,7 @@ def address_cli_name(param: str) -> str:
 
 def ss58_param_help(param: str) -> str:
     """Help text for an address-typed CLI option (see AppContext.resolve_address)."""
-    book = "address-book name, "
+    book = "address-book or proxy-book name, "
     if "hotkey" in param:
         text = f"ss58 address, {book}or a local hotkey name (HOTKEY or WALLET/HOTKEY)."
         if param == "hotkey_ss58":
@@ -58,9 +58,24 @@ class AppContext:
     assume_yes: bool
     dry_run: bool
     output: Output
+    # Whether --wallet/-w (or BT_WALLET) was passed explicitly, as opposed to
+    # wallet_name being the config/built-in default. Wallet-scoped commands use
+    # this to decide whether the target wallet still needs confirming.
+    wallet_given: bool = False
+    # Same for --wallet-hotkey/-H (or BT_WALLET_HOTKEY): hotkey-scoped commands
+    # confirm the hotkey name when it was only defaulted.
+    hotkey_given: bool = False
+    # Diagnostic log verbosity (-v count); kept so per-command --quiet/--verbose
+    # overrides can reconfigure logging without losing the root-level setting.
+    verbosity: int = 0
     wallet_password_file: Optional[str] = None
     macos_password: bool = False
     keychain_password: bool = False
+    # Connection resilience: comma-separated endpoint pools ("none" pins the
+    # client to its primary endpoint; unset uses the network's public defaults).
+    fallback_endpoints: Optional[str] = None
+    archive_endpoints: Optional[str] = None
+    retry_forever: bool = False
     signer_backend: Optional[str] = None
     signer_address: Optional[str] = None
     extension_source: Optional[str] = None
@@ -163,9 +178,10 @@ class AppContext:
     def resolve_address(self, param: str, value: Optional[str]) -> Optional[str]:
         """Resolve an address-typed CLI value (any ``*_ss58`` param) to an ss58 address.
 
-        Four accepted forms:
+        Five accepted forms:
         - a raw ss58 address: used as-is;
         - an address-book name (``subtensor addresses NAME SS58``);
+        - a proxy-book name (``subtensor proxy book add``);
         - a local key reference: hotkey params take ``HOTKEY`` (in the configured
           wallet) or ``WALLET/HOTKEY``; coldkey params take a ``WALLET`` name
           (resolved to its coldkey);
@@ -173,26 +189,64 @@ class AppContext:
           fall back to the configured wallet's own key. Destination-style params
           (``--dest``, ``--destination-hotkey``, ...) never default.
         """
+        kind = "hotkey" if "hotkey" in param else "coldkey"
+        if value is None and param in ("coldkey_ss58", "hotkey_ss58"):
+            # Inline import: prompt.py imports AppContext from this module, so a
+            # top-level import here would be circular.
+            from .prompt import confirm_wallet
+
+            confirm_wallet(
+                self,
+                help_text=f"Wallet whose {kind} this command targets.",
+                require_coldkey=param == "coldkey_ss58",
+                hotkey_help=(
+                    "Hotkey this command targets." if param == "hotkey_ss58" else None
+                ),
+            )
         if value is not None and is_valid_ss58_address(value):
+            booked = next(
+                (e["name"] for e in cfg.load_addresses() if e.get("address") == value), None
+            )
+            self.output.name_address(value, booked)
+            self.output.classify_address(value, kind)
             return value
         if value is not None:
             booked = cfg.get_address(value)
             if booked:
+                self.output.name_address(booked, value)
+                self.output.classify_address(booked, kind)
                 return booked
+            proxy_entry = cfg.get_proxy(value)
+            proxied = proxy_entry.get("address") if proxy_entry else None
+            if isinstance(proxied, str) and proxied:
+                self.output.name_address(proxied, value)
+                self.output.classify_address(proxied, kind)
+                return proxied
         try:
             if value is None:
                 if param == "hotkey_ss58":
-                    return self.wallet().hotkey.ss58_address
+                    address = self.wallet().hotkey.ss58_address
+                    self.output.name_address(address, f"{self.wallet_name}/{self.hotkey_name}")
+                    self.output.classify_address(address, "hotkey")
+                    return address
                 if param == "coldkey_ss58":
-                    return self.wallet().coldkeypub.ss58_address
+                    address = self.wallet().coldkeypub.ss58_address
+                    self.output.name_address(address, self.wallet_name)
+                    self.output.classify_address(address, "coldkey")
+                    return address
                 return None
             if "hotkey" in param:
                 wallet_name, _, hotkey = value.rpartition("/")
                 handle = wallets.open_wallet(
                     wallet_name or self.wallet_name, hotkey, self.wallet_path
                 )
+                self.output.name_address(handle.hotkey.ss58_address, value)
+                self.output.classify_address(handle.hotkey.ss58_address, "hotkey")
                 return handle.hotkey.ss58_address
-            return wallets.open_wallet(name=value, path=self.wallet_path).coldkeypub.ss58_address
+            address = wallets.open_wallet(name=value, path=self.wallet_path).coldkeypub.ss58_address
+            self.output.name_address(address, value)
+            self.output.classify_address(address, "coldkey")
+            return address
         except Exception as error:
             shown = value if value is not None else f"{self.wallet_name}/{self.hotkey_name}"
             self.output.error(f"cannot resolve {address_cli_name(param)} {shown!r}: {error}")
@@ -211,24 +265,74 @@ class AppContext:
             resolved.append(address)
         return list(dict.fromkeys(resolved))
 
+    def _register_local_names(self, wallet) -> None:
+        """Teach the renderer the local names for addresses it may print: the
+        signing wallet's keys and every address-book contact."""
+        try:
+            self.output.name_address(wallet.coldkeypub.ss58_address, self.wallet_name)
+            self.output.classify_address(wallet.coldkeypub.ss58_address, "coldkey")
+        except Exception:
+            pass  # coldkey-less wallet dir; names are cosmetic
+        try:
+            self.output.name_address(
+                wallet.hotkey.ss58_address, f"{self.wallet_name}/{self.hotkey_name}"
+            )
+            self.output.classify_address(wallet.hotkey.ss58_address, "hotkey")
+        except Exception:
+            pass
+        for entry in cfg.load_addresses():
+            self.output.name_address(entry.get("address"), entry.get("name"))
+        for entry in cfg.load_proxies():
+            self.output.name_address(entry.get("address"), entry.get("name"))
+
     def submit(
         self,
         intent,
         *,
         proxy_for: Optional[str] = None,
         force_proxy_type: Optional[str] = None,
-    ) -> None:
+    ) -> Optional[ExtrinsicResult]:
         """Run a mutation with a uniform dry-run / confirm / execute / render flow.
 
         ``--dry-run`` shows the plan (fee, effects, warnings, policy) and stops.
         Otherwise the intent's own summary is the confirmation prompt; the intent
-        is then executed and its result rendered. The prompt/summary is never
-        hand-written per command — it comes from the intent.
+        is then executed, its result rendered, and the ``ExtrinsicResult``
+        returned (None when the dry-run path stopped early). The prompt/summary
+        is never hand-written per command — it comes from the intent.
 
         ``proxy_for`` dispatches the call as that account via ``Proxy.proxy``,
         signed by the local wallet key (which must be its registered proxy).
+        When omitted, the persistent ``proxy_for`` config value (if set) is
+        used; the sentinel ``self`` bypasses that default and signs directly.
         """
+        # Inline import: prompt.py imports AppContext from this module, so a
+        # top-level import here would be circular.
+        from .prompt import confirm_wallet
+
+        if proxy_for == "self":
+            proxy_for = None
+        elif proxy_for is None:
+            configured = cfg.get("proxy_for")
+            if configured:
+                proxy_for = self.resolve_address("proxy_for", str(configured))
+                self.output.message(
+                    f"[dim]dispatching via configured proxy_for {configured!r} "
+                    "— pass `--proxy-for self` to sign directly[/dim]"
+                )
+
+        # The signing wallet is confirmed when it was only defaulted (generated
+        # tx commands already did this via signer_specs and set wallet_given).
+        confirm_wallet(
+            self,
+            help_text=(
+                "Wallet containing the signing hotkey."
+                if intent.signer == "hotkey"
+                else "Wallet whose coldkey signs this transaction."
+            ),
+            require_coldkey=intent.signer == "coldkey",
+        )
         wallet = self.wallet()
+        self._register_local_names(wallet)
         options = {"proxy_for": proxy_for, "proxy_type": force_proxy_type}
         summary = intent.summary() + (f" [as {proxy_for} via proxy]" if proxy_for else "")
 
@@ -249,7 +353,7 @@ class AppContext:
             self.output.plan(plan)
             if not plan.ok:
                 raise typer.Exit(1)
-            return
+            return None
 
         if self.uses_extension_signer():
             async def _prepare(_client):
@@ -276,14 +380,46 @@ class AppContext:
         result = self.run(_execute)
         if not self.output.result(result, summary):
             raise typer.Exit(1)
+        return result
 
     def run(self, work: Callable[[Client], Awaitable[T]]) -> T:
         """Open a client, run ``work``, and translate SDK/connection errors into
-        clean messages with a non-zero exit code (never a traceback)."""
+        clean messages with a non-zero exit code (never a traceback).
+
+        While connected, the netuid -> subnet-name cache is refreshed (at most
+        once per TTL) concurrently with ``work``, so netuid references render
+        as "4 (Targon)" everywhere — including prompts that run offline.
+        """
 
         async def _main() -> T:
-            async with Client(self.network) as client:
-                return await work(client)
+            async with Client(
+                self.network,
+                fallback_endpoints=_endpoint_pool(self.fallback_endpoints),
+                archive_endpoints=_endpoint_pool(self.archive_endpoints),
+                retry_forever=self.retry_forever,
+            ) as client:
+                # connect() just loaded the chain's token symbols (disk cache
+                # or one map scan); hand them to the renderer so amounts and
+                # netuid references carry the real symbols.
+                self.output.update_token_symbols(client.token_symbols)
+                names_task = (
+                    None
+                    if cfg.subnet_names_fresh(self.network)
+                    else asyncio.create_task(client.read("subnet_names"))
+                )
+                try:
+                    result = await work(client)
+                except BaseException:
+                    if names_task is not None:
+                        names_task.cancel()
+                        await asyncio.gather(names_task, return_exceptions=True)
+                    raise
+                if names_task is not None:
+                    try:
+                        self.output.update_subnet_names(await names_task)
+                    except Exception:
+                        pass  # names are cosmetic; never fail a command over them
+                return result
 
         try:
             return asyncio.run(_main())
@@ -295,7 +431,9 @@ class AppContext:
             raise typer.Exit(1)
         except RuntimeError as error:
             if "different loop" in str(error).lower():
-                self.output.error("extension bridge connection lost; retry the command")
+                self.output.error(
+                    "extension bridge connection lost", help="retry the command"
+                )
                 raise typer.Exit(1)
             raise
         except TypeError as error:
@@ -314,11 +452,33 @@ class AppContext:
         if self.assume_yes:
             return
         if self.output.json_mode or not sys.stdin.isatty():
-            self.output.error("refusing to submit without confirmation; pass --yes")
+            self.output.error(
+                "refusing to submit without confirmation",
+                help="pass `--yes` to skip the prompt in non-interactive sessions",
+            )
             raise typer.Exit(1)
-        if not typer.confirm(prompt):
+        try:
+            accepted = self.output.confirm(prompt)
+        except (KeyboardInterrupt, EOFError):
+            self.output.message("aborted.")
+            raise typer.Exit(130)
+        if not accepted:
             self.output.message("aborted.")
             raise typer.Exit(1)
+
+
+def _endpoint_pool(value: Optional[str]) -> Optional[list[str]]:
+    """Parse a comma-separated endpoint list.
+
+    None -> None (the network's public defaults apply); "none"/"off" -> []
+    (pinned to the primary endpoint); otherwise the listed ws(s):// URLs.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if text.lower() in ("none", "off"):
+        return []
+    return [url.strip() for url in text.split(",") if url.strip()]
 
 
 def ctx_of(ctx: typer.Context) -> AppContext:

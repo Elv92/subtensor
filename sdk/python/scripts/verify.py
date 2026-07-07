@@ -314,31 +314,62 @@ async def main() -> int:
         )
         check(
             "eq across units is False, not raise",
-            (sub.Balance.from_tao(1) == sub.Balance.from_tao(1, netuid=2)) is False,
+            (sub.Balance.from_tao(1) == sub.Balance.from_alpha(1, netuid=2)) is False,
         )
         check(
             "membership across units works",
-            sub.Balance.from_tao(1) not in [sub.Balance.from_tao(1, netuid=2)],
+            sub.Balance.from_tao(1) not in [sub.Balance.from_alpha(1, netuid=2)],
         )
         check(
             "from_tao exact from string at 10M+",
             sub.Balance.from_tao("10000000.123456789").rao == 10_000_000_123456789,
         )
         check(
+            ".tao on an alpha balance raises",
+            _raises(sub.UnitMismatchError, lambda: sub.Balance.from_alpha(1, netuid=2).tao),
+        )
+        check(
+            ".alpha on a TAO balance raises",
+            _raises(sub.UnitMismatchError, lambda: sub.Balance.from_tao(1).alpha),
+        )
+        check(
+            "from_alpha rejects netuid 0",
+            _raises(sub.UnitMismatchError, lambda: sub.Balance.from_alpha(1, netuid=0)),
+        )
+        check(
             "unit guard: wrong-netuid Balance into an intent is rejected",
             _raises(
                 sub.UnitMismatchError,
                 lambda: sub.AddStake(
-                    hotkey_ss58=BOB_HOT, netuid=1, amount_tao=sub.Balance.from_tao(1, netuid=5)
+                    hotkey_ss58=BOB_HOT, netuid=1, amount_tao=sub.Balance.from_alpha(1, netuid=5)
                 ),
             ),
         )
         check(
             "unit ok: matching Balance accepted into an intent",
             sub.RemoveStake(
-                hotkey_ss58=BOB_HOT, netuid=3, amount_alpha=sub.Balance.from_tao(2, netuid=3)
-            ).amount_alpha
-            == 2.0,
+                hotkey_ss58=BOB_HOT, netuid=3, amount_alpha=sub.Balance.from_alpha(2, netuid=3)
+            ).amount_alpha.rao
+            == 2 * 10**9,
+        )
+        check(
+            "intent money is exact rao (no float in the write path)",
+            sub.Transfer(dest_ss58=BOB, amount_tao="10000000.123456789").amount_tao.rao
+            == 10_000_000_123456789,
+        )
+        round_tripped = sub.Transfer(dest_ss58=BOB, amount_tao="10000000.123456789").to_dict()
+        check(
+            "intent to_dict round-trips money exactly",
+            build(round_tripped.pop("op"), round_tripped).amount_tao.rao
+            == 10_000_000_123456789,
+            str(round_tripped.get("amount_tao")),
+        )
+        check(
+            "policy spend cap compares in exact rao (1 rao over the cap violates)",
+            sub.Policy(max_spend_tao="0.999999999").check(
+                sub.Transfer(dest_ss58=BOB, amount_tao=1.0), None
+            )
+            != [],
         )
 
         print("\n== writes via the single intent path (proven by state change) ==")

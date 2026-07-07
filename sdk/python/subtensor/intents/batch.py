@@ -9,10 +9,12 @@ the command for free like any other intent.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .._generated import calls
+from ..balance import Balance
+from ._money import UNBOUNDED, Spend
 from .base import BuiltCall, Intent
 from .registry import build as build_intent
 from .registry import register
@@ -23,15 +25,26 @@ from .registry import register
 class Batch(Intent):
     """Execute several intents atomically in one extrinsic (all-or-nothing).
 
-    ``intents`` is a list of operations, each ``{"op": <name>, ...args}`` (or, in
-    Python, Intent instances). All children must share one signer, and batches
-    cannot nest.
+    Wraps the child calls in ``Utility.batch_all``: they run in order and if
+    any one fails the whole extrinsic reverts, so there is never a
+    partially-applied result. Use it for multi-step operations that must land
+    together (e.g. move funds then act on them) instead of submitting the
+    steps separately and risking a half-done state. All children must share
+    one signer — an extrinsic has a single signature — and batches cannot
+    contain other batches. Spend limits and policy checks aggregate across
+    every child, and the transaction plan lists each child's effects.
     """
 
     op = "batch"
     wraps = (("Utility", "batch_all"),)
 
-    intents: list
+    intents: list = field(
+        metadata={
+            "help": "The calls to execute, in order, as a JSON list of objects "
+            '{"op": <intent name>, ...args}. At least one; all must share a signer; '
+            "batches cannot nest."
+        }
+    )
 
     def __post_init__(self):
         if not self.intents:
@@ -94,8 +107,19 @@ class Batch(Intent):
             out.extend(f"[{index}] {w}" for w in await child.warnings(substrate, signer_address))
         return out
 
-    def spend_tao(self) -> float:
-        return sum(child.spend_tao() for child in self._children)
+    def spend(self) -> Spend:
+        """Aggregate TAO spend across children; any unbounded child makes the
+        whole batch unbounded."""
+        total = Balance.from_rao(0)
+        bounded = False
+        for child in self._children:
+            child_spend = child.spend()
+            if child_spend is UNBOUNDED:
+                return UNBOUNDED
+            if child_spend is not None:
+                total = total + child_spend
+                bounded = True
+        return total if bounded else None
 
     def touches_netuids(self) -> list[int]:
         return sorted({netuid for child in self._children for netuid in child.touches_netuids()})

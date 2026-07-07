@@ -1,0 +1,78 @@
+---
+title: Validating
+description: Register, attract stake, score miners with weights, and manage take and childkeys.
+---
+
+A validator is a hotkey that scores miners. It needs enough stake behind it to
+hold a validator permit on the subnet, and it earns dividends (shared with its
+nominators) for setting weights that agree with consensus.
+
+## Get in position
+
+Register the hotkey on the subnet like any neuron
+([`burned-register`](/docs/tx/burned-register)), then accumulate stake — your
+own ([`add-stake`](/docs/tx/add-stake)) and delegated. Whether you hold a
+validator permit is visible in the [`metagraph`](/docs/query/metagraph).
+
+To attract delegation, publish who you are with
+[`set-identity`](/docs/tx/set-identity) and set your
+[take](/docs/tx/set-take) — the fraction of staking emissions you keep before
+distributing the rest to nominators. Take increases are rate-limited and
+capped by the chain; [`set-take`](/docs/tx/set-take) dispatches whichever of
+`increase_take`/`decrease_take` reaches your target.
+
+## Set weights
+
+[`set-weights`](/docs/tx/set-weights) is the one entry point. It conforms your
+weights to the subnet's hyperparameters (max-weight clip, u16 quantization,
+minimum weight count) and submits via whichever path the subnet runs — plain
+weights when commit-reveal is off, or a timelock-encrypted commit
+(auto-revealed by the chain) when it is on:
+
+```python
+intent = sub.SetWeights(
+    netuid=1,
+    uids=[0, 1, 2],
+    weights=[0.1, 0.7, 0.2],
+)
+result = await client.execute(intent, wallet)   # signed by the hotkey
+```
+
+```bash
+subtensor tx set-weights --netuid 1 --uids 0,1,2 --weights 0.1,0.7,0.2 -w my_coldkey -H my_hotkey
+```
+
+Before signing, the SDK preflights the checks the chain would reject on — a
+rate-limited or unregistered submission fails fast with the same error the
+chain would return, and the rate-limit error says how many blocks to wait.
+
+Timing reads: [`weights-rate-limit`](/docs/query/weights-rate-limit),
+[`blocks-since-last-update`](/docs/query/blocks-since-last-update),
+[`epoch-status`](/docs/query/epoch-status),
+[`reveal-period`](/docs/query/reveal-period). Force a specific path with
+[`commit-weights`](/docs/tx/commit-weights) (timelocked commit) or
+[`reveal-weights`](/docs/tx/reveal-weights) (legacy salt-based reveal only).
+
+## Childkeys: delegate stake weight
+
+[`set-children`](/docs/tx/set-children) lets a parent hotkey delegate a
+fraction of its stake weight to other hotkeys on one subnet — commonly used to
+point stake at a separate validating key without moving the stake itself. The
+call replaces the full child set (empty list revokes all), is rate-limited, and
+takes effect after a chain-defined cooldown. Inspect with
+[`children`](/docs/query/children) / [`parents`](/docs/query/parents) /
+[`pending-children`](/docs/query/pending-children).
+
+## Root and governance
+
+Register on the root network with [`root-register`](/docs/tx/root-register) —
+placement is stake-based, and the top root members form the senate. Senate
+members vote on proposals with [`senate-vote`](/docs/tx/senate-vote) (signed by
+the hotkey).
+
+## Operational hygiene
+
+Keep the coldkey off the validator box: weights are hotkey-signed, and
+anything coldkey-signed can go through a [proxy](/docs/concepts/advanced).
+Publish your endpoint with [`serve-axon`](/docs/tx/serve-axon) if your subnet's
+protocol requires validators to be reachable.

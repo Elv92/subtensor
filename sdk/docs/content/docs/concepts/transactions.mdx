@@ -1,0 +1,107 @@
+---
+title: The transaction model
+description: Intents, plan and execute, Policy guardrails, and typed results.
+---
+
+Every state change goes through one shape, whether you drive it from Python,
+the CLI, or an agent tool call:
+
+1. Describe **what** you want as an **intent** — a small serializable dataclass.
+2. **`plan`** it — fee, predicted effects, warnings, policy verdict. Nothing is
+   submitted.
+3. **`execute`** it — sign and submit through a single policy-gated choke
+   point, and get a typed result back.
+
+## Intents
+
+An intent's fields are JSON-native, so it round-trips to and from a dict
+without custom encoders. Each intent knows its chain call, its signer
+(coldkey or hotkey), and its JSON schema. All 70+ of them are cataloged under
+[Transactions](/docs/tx), one page each.
+
+```python
+import subtensor as sub
+from bittensor_wallet import Wallet
+
+wallet = Wallet(name="my_coldkey", hotkey="my_hotkey")
+intent = sub.AddStake(hotkey_ss58="5F...validator", netuid=1, amount_tao=10)
+```
+
+Or build one by op name from a plain dict — how agents and tools do it:
+
+```python
+intent = sub.intents.build("add_stake", {"hotkey_ss58": "5F...", "netuid": 1, "amount_tao": 10})
+```
+
+## Plan: preview everything
+
+```python
+async with sub.Client("finney") as client:
+    plan = await client.plan(intent, wallet)
+    plan.fee         # estimated fee (Balance)
+    plan.effects     # ["stake 10 TAO to 5F... on subnet 1", ...]
+    plan.warnings    # non-fatal cautions
+    plan.violations  # policy violations that would block execute
+    plan.ok          # no violations?
+```
+
+On the CLI, `--dry-run` on any `tx` command prints the same plan and submits
+nothing.
+
+## Execute: one choke point
+
+```python
+result = await client.execute(intent, wallet)
+result.success       # bool
+result.block_hash    # where it landed
+```
+
+`execute` re-plans, enforces the policy, signs with the correct key (the
+intent declares whether it needs the coldkey or hotkey), submits, and decodes
+the receipt. `client.execute_tool(op, args, wallet)` is the by-name variant.
+
+## Policy: hard guardrails
+
+A `Policy` bounds what any execution may do. Violations raise `PolicyError` at
+execute time and appear in every plan:
+
+```python
+policy = sub.Policy(
+    max_fee_tao=0.1,
+    max_spend_tao=5.0,
+    allowed_netuids=[1, 2],
+    allow_raw_calls=False,   # default: raw submit_call is refused
+)
+async with sub.Client("finney", policy=policy) as client:
+    ...
+```
+
+Intents whose spend cannot be bounded ahead of time (subnet registration,
+`transfer_all`, ...) report an infinite spend, so a spend cap blocks them until
+deliberately raised.
+
+## Typed results and errors
+
+Failures come back as data, not prose. The `error` on a failed
+`ExtrinsicResult` carries the exact chain error name, a semantic
+[`ErrorCode`](/docs/errors) to branch on, and a remediation hint:
+
+```python
+result = await client.execute(sub.BurnedRegister(netuid=999), wallet)
+if not result.success:
+    print(result.error.name)         # "SubNetworkDoesNotExist"
+    print(result.error.code)         # ErrorCode.SUBNET_NOT_EXISTS
+    print(result.error.remediation)  # what to try next
+```
+
+Every chain error name is deliberately classified — a CI gate keeps the mapping
+complete in both directions — so a failure never degrades to "unknown" without
+a reason.
+
+## The CLI is the same machinery
+
+Every intent is `subtensor tx <op-name>`; the command's options are generated
+from the intent's fields, so the CLI and SDK can't diverge. Interactive
+sessions prompt for missing required options and confirm before submitting;
+`--yes` skips confirmation, and a non-interactive session without `--yes` is
+declined rather than left hanging.

@@ -16,24 +16,39 @@ Open with ``async with`` or ``connect()``.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Optional
+from datetime import datetime, timezone
+from typing import Any, AsyncIterator, Optional, Union
 
-from . import reads as read_registry
-from ._substrate import Substrate
-from .balances import Balances
+from . import config, reads as read_registry
+from ._generated import storage as _st
+from ._substrate import RpcSubstrate, Substrate
+from .balance import Balance
 from .executor import Executor
 from .intents import Intent, Plan, Policy
 from .multisig import Multisig
-from .neurons import Neurons
-from .result import ExtrinsicResult
-from .settings import DEFAULT_NETWORK, resolve_endpoint
+from .namespaces import Balances, Neurons, Staking, Subnets
+from .result import BittensorError, ChainError, ExtrinsicResult
+from .signing import WalletLike
+from .settings import (
+    DEFAULT_NETWORK,
+    default_archive_endpoints,
+    default_fallback_endpoints,
+    explorer_block_url,
+    resolve_endpoint,
+)
 from .snapshot import Snapshot
-from .staking import Staking
-from .subnets import Subnets
 
-# A generated descriptor is a (container, name) pair (see subtensor/_generated).
-Descriptor = tuple
+# A generated descriptor is a (container, name) pair (see subtensor/_generated);
+# a plain 2-tuple of strings works for items missing from the generated catalog.
+Descriptor = tuple[str, str]
+
+# A moment in time: datetime, unix timestamp, or ISO-8601 string.
+WhenLike = Union[datetime, str, int, float]
+
+# Slot duration of a fast-blocks chain (local/e2e testing mode), in seconds.
+FAST_BLOCK_TIME = 0.25
 
 
 @dataclass
@@ -45,22 +60,100 @@ class BlockHeader:
     raw: dict = field(repr=False)
 
 
+@dataclass
+class BlockInfo:
+    """One block's metadata and contents (``client.block_info()``)."""
+
+    number: int
+    hash: Optional[str]
+    timestamp: datetime  # UTC, from the block's Timestamp.set inherent
+    explorer_url: Optional[str]
+    header: dict = field(repr=False)
+    extrinsics: list = field(repr=False)  # decoded values; None for undecodable entries
+
+
+@dataclass
+class EpochEvent:
+    """An epoch run observed by ``client.wait_for_epoch()``."""
+
+    netuid: int
+    block: int  # block at which the epoch ran (the new LastEpochBlock)
+    previous: int  # LastEpochBlock before this run
+
+
+def _as_unix(when: WhenLike) -> float:
+    """A unix timestamp from a datetime, ISO-8601 string, or numeric timestamp.
+
+    Naive datetimes and ISO strings without an offset are taken as UTC — chain
+    time is global, so local-time guessing would be a footgun.
+    """
+    if isinstance(when, datetime):
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return when.timestamp()
+    if isinstance(when, (int, float)):
+        return float(when)
+    try:
+        return _as_unix(datetime.fromisoformat(str(when).strip().replace("Z", "+00:00")))
+    except ValueError:
+        raise BittensorError(
+            f"cannot parse moment {when!r}; use a datetime, a unix timestamp, or "
+            "ISO-8601 like '2026-07-08T12:00Z' (no offset means UTC)"
+        ) from None
+
+
 class Client:
-    def __init__(self, network: str = DEFAULT_NETWORK, *, policy: Optional[Policy] = None):
+    def __init__(
+        self,
+        network: str = DEFAULT_NETWORK,
+        *,
+        policy: Optional[Policy] = None,
+        fallback_endpoints: Optional[list[str]] = None,
+        archive_endpoints: Optional[list[str]] = None,
+        retry_forever: bool = False,
+        substrate: Optional[Substrate] = None,
+    ):
         """Create a client for a network name (``finney``/``test``/``local``) or a
         raw ``ws://`` / ``wss://`` endpoint. An optional ``policy`` guards every
         mutation. The connection opens on ``connect()``.
+
+        Connection resilience is on by default: when the endpoint is unreachable
+        (or drops mid-session) the connection rotates through
+        ``fallback_endpoints``, and reads against pruned state are retried on
+        ``archive_endpoints``. Both default to the public pools for the network
+        (see ``settings.FALLBACK_ENDPOINTS`` / ``settings.ARCHIVE_ENDPOINTS``);
+        pass ``[]`` to pin the client to its single endpoint. With
+        ``retry_forever`` connection failures never give up — the client keeps
+        cycling through the endpoint pool until one answers.
+
+        ``substrate`` swaps the chain-access backend: any :class:`Substrate`
+        implementation (e.g. an in-memory fake for tests). When set, the
+        connection options above don't apply — they configure the default
+        RPC backend — while ``network`` still labels explorer links.
         """
         self.network, self.endpoint = resolve_endpoint(network)
-        self._substrate = Substrate(self.endpoint)
+        if substrate is not None:
+            self._substrate: Substrate = substrate
+        else:
+            if fallback_endpoints is None:
+                fallback_endpoints = default_fallback_endpoints(self.network)
+            if archive_endpoints is None:
+                archive_endpoints = default_archive_endpoints(self.network)
+            self._substrate = RpcSubstrate(
+                self.endpoint,
+                fallback_endpoints=[url for url in fallback_endpoints if url != self.endpoint],
+                archive_endpoints=archive_endpoints,
+                retry_forever=retry_forever,
+            )
         self._executor = Executor(self._substrate, policy=policy)
 
-        # Typed read conveniences (decode/aggregate). Anything else is reachable
-        # via the generic query/runtime accessors below.
-        self.balances = Balances(self._substrate)
-        self.subnets = Subnets(self._substrate)
-        self.neurons = Neurons(self._substrate)
-        self.staking = Staking(self._substrate)
+        # Typed read namespaces: thin projections over the read registry
+        # (subtensor.reads). Anything else is reachable via the generic
+        # query/runtime accessors below.
+        self.balances = Balances(self)
+        self.subnets = Subnets(self)
+        self.neurons = Neurons(self)
+        self.staking = Staking(self)
 
     # Reads: generic accessors over generated descriptors ---------------------
 
@@ -70,7 +163,12 @@ class Client:
     async def query(
         self, item: Descriptor, params: Optional[list] = None, *, block: Optional[int] = None
     ) -> Any:
-        """Read a storage item, e.g. ``client.query(storage.SubtensorModule.Tempo, [netuid])``."""
+        """Read a storage item, e.g. ``client.query(storage.SubtensorModule.Tempo, [netuid])``.
+
+        A descriptor is just a ``(pallet, item)`` pair, so storage not yet in the
+        generated catalog is reachable with a plain tuple:
+        ``client.query(("SubtensorModule", "Tempo"), [netuid])``.
+        """
         return await self._substrate.query(
             item[0], item[1], params, block_hash=await self._block_hash(block)
         )
@@ -78,15 +176,35 @@ class Client:
     async def query_map(
         self, item: Descriptor, params: Optional[list] = None, *, block: Optional[int] = None
     ) -> list[tuple[Any, Any]]:
-        """Read a whole storage map, e.g. ``client.query_map(storage.SubtensorModule.Tempo)``."""
+        """Read a whole storage map, e.g. ``client.query_map(storage.SubtensorModule.Tempo)``.
+
+        As with :meth:`query`, a plain ``(pallet, item)`` tuple works for maps
+        missing from the generated catalog.
+        """
         return await self._substrate.query_map(
             item[0], item[1], params, block_hash=await self._block_hash(block)
+        )
+
+    async def query_batch(
+        self, item: Descriptor, param_sets: list[list], *, block: Optional[int] = None
+    ) -> list[Any]:
+        """Read one storage map for many keys in a single RPC round-trip.
+
+        ``param_sets`` is a list of parameter lists (one per key); results come
+        back in the same order, all resolved against the same block.
+        """
+        return await self._substrate.query_batch(
+            item[0], item[1], param_sets, block_hash=await self._block_hash(block)
         )
 
     async def runtime(
         self, method: Descriptor, params: list, *, block: Optional[int] = None
     ) -> Any:
-        """Call a runtime API, e.g. ``client.runtime(runtime_api.NeuronInfoRuntimeApi.get_neurons_lite, [netuid])``."""
+        """Call a runtime API, e.g. ``client.runtime(runtime_api.NeuronInfoRuntimeApi.get_neurons_lite, [netuid])``.
+
+        As with :meth:`query`, a plain ``(api, method)`` tuple works for APIs
+        missing from the generated catalog.
+        """
         return await self._substrate.runtime_call(
             method[0], method[1], params, block_hash=await self._block_hash(block)
         )
@@ -95,18 +213,22 @@ class Client:
         """Read a pallet constant, e.g. ``client.constant(constants.Balances.ExistentialDeposit)``."""
         return await self._substrate.constant(item[0], item[1])
 
-    async def read(self, name: str, **params: Any) -> Any:
-        """Run a named typed read (see ``reads()`` for the catalog).
+    async def decode_scale(self, type_string: str, data: Any) -> Any:
+        """Decode SCALE-encoded bytes (or 0x-hex) against the connected runtime's types.
 
-        e.g. ``await client.read("subnet_hyperparameters", netuid=1)``.
+        The read-side escape hatch, like :meth:`submit_call` for writes: e.g.
+        ``client.decode_scale("Call", call_data)`` recovers the call a multisig
+        approval or timelock ciphertext carries as opaque bytes.
         """
-        try:
-            spec = read_registry.REGISTRY[name]
-        except KeyError:
-            raise ValueError(
-                f"Unknown read {name!r}. Known reads: {sorted(read_registry.REGISTRY)}"
-            ) from None
-        return await spec.fetch(self, **params)
+        return await self._substrate.decode_scale(type_string, data)
+
+    async def read(self, name: str, **params: Any) -> Any:
+        """Run a named typed read at the chain head (see ``reads()`` for the catalog).
+
+        e.g. ``await client.read("subnet_hyperparameters", netuid=1)``. For a
+        block-pinned read use a snapshot: ``(await client.at(block)).read(...)``.
+        """
+        return await read_registry.dispatch(self, name, params)
 
     def reads(self) -> list[dict]:
         """Machine-readable catalog of every typed read (for agents)."""
@@ -126,9 +248,131 @@ class Client:
                 raw=header,
             )
 
+    # Chain / block metadata ---------------------------------------------------
+
+    async def timestamp(self, block: Optional[int] = None) -> datetime:
+        """UTC timestamp of a block (defaults to the chain head)."""
+        ms = await self.query(_st.Timestamp.Now, block=block)
+        return datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc)
+
+    async def block_time(self) -> float:
+        """Seconds per block, detected from the chain (cached after first read).
+
+        12.0 on mainnet, 0.25 on fast-blocks local chains — use this instead of
+        assuming a block time whenever converting blocks to wall-clock time.
+        """
+        return await self._substrate.block_time()
+
+    async def is_fast_blocks(self) -> bool:
+        """Whether the chain runs fast blocks (0.25s slots, local/e2e testing mode)."""
+        return await self.block_time() == FAST_BLOCK_TIME
+
+    async def block_info(self, block: Optional[int] = None) -> Optional[BlockInfo]:
+        """A block's header, timestamp, and decoded extrinsics (defaults to the head).
+
+        One aggregated lookup for "what happened in this block". Everything else
+        about chain state at that block is reachable via the generic
+        ``query``/``runtime`` accessors with ``block=``.
+        """
+        raw = await self._substrate.get_block(block_number=block)
+        header = (raw or {}).get("header")
+        if not header:
+            return None
+        number = int(header["number"])
+        extrinsics = [_extrinsic_value(e) for e in (raw or {}).get("extrinsics") or []]
+        stamp = _timestamp_from_extrinsics(extrinsics)
+        if stamp is None:
+            stamp = await self.timestamp(block=number)
+        return BlockInfo(
+            number=number,
+            hash=header.get("hash"),
+            timestamp=stamp,
+            explorer_url=explorer_block_url(self.network, number),
+            header=header,
+            extrinsics=extrinsics,
+        )
+
+    # Waits --------------------------------------------------------------------
+
+    async def wait_for_block(
+        self, block: Optional[int] = None, *, timeout: Optional[float] = None
+    ) -> BlockHeader:
+        """Wait until the chain reaches a block, returning the header that got there.
+
+        With no ``block``, waits for the next block. Subscription-based (no
+        polling); raises ``asyncio.TimeoutError`` if ``timeout`` seconds elapse.
+        """
+
+        async def wait() -> BlockHeader:
+            target = block if block is not None else await self.block() + 1
+            async for header in self.blocks():
+                if header.number >= target:
+                    return header
+            raise ChainError("block subscription ended before the target block")
+
+        return await asyncio.wait_for(wait(), timeout) if timeout else await wait()
+
+    async def wait_for_timestamp(
+        self, when: WhenLike, *, timeout: Optional[float] = None
+    ) -> BlockHeader:
+        """Wait until chain time reaches ``when``, returning the header that got there.
+
+        ``when`` is a datetime, unix timestamp, or ISO-8601 string (naive means
+        UTC). Long gaps are slept through instead of holding a subscription open;
+        the decision is always made on the chain's own clock, not the local one.
+        """
+
+        async def wait() -> BlockHeader:
+            target = _as_unix(when)
+            block_time = await self.block_time()
+            gap = target - (await self.timestamp()).timestamp()
+            if gap > 4 * block_time:
+                await asyncio.sleep(gap - 2 * block_time)
+            async for header in self.blocks():
+                stamp = await self.timestamp(block=header.number)
+                if stamp.timestamp() >= target:
+                    return header
+            raise ChainError("block subscription ended before the target timestamp")
+
+        return await asyncio.wait_for(wait(), timeout) if timeout else await wait()
+
+    async def wait_for_epoch(
+        self, netuid: int, *, timeout: Optional[float] = None
+    ) -> EpochEvent:
+        """Wait until the subnet's next epoch has actually run.
+
+        Watches ``LastEpochBlock`` advance rather than waiting for a predicted
+        block: the chain's epoch schedule is stateful (owner ``trigger_epoch``
+        can pull an epoch earlier, the per-block epoch cap can defer one later),
+        so only an observed run is trustworthy. Costs one storage read per new
+        block while waiting.
+        """
+
+        async def wait() -> EpochEvent:
+            tempo = int(await self.query(_st.SubtensorModule.Tempo, [netuid]) or 0)
+            if tempo == 0:
+                raise BittensorError(
+                    f"subnet {netuid} has tempo 0 and never runs epochs"
+                )
+            baseline = int(
+                await self.query(_st.SubtensorModule.LastEpochBlock, [netuid]) or 0
+            )
+            async for header in self.blocks():
+                value = int(
+                    await self.query(
+                        _st.SubtensorModule.LastEpochBlock, [netuid], block=header.number
+                    )
+                    or 0
+                )
+                if value > baseline:
+                    return EpochEvent(netuid=netuid, block=value, previous=baseline)
+            raise ChainError("block subscription ended before the next epoch")
+
+        return await asyncio.wait_for(wait(), timeout) if timeout else await wait()
+
     # Intent layer -----------------------------------------------------------
 
-    async def plan(self, intent: Intent, wallet: Any, **kwargs) -> Plan:
+    async def plan(self, intent: Intent, wallet: WalletLike, **kwargs) -> Plan:
         """Preview an intent (fee, effects, warnings, policy) without submitting.
 
         This is the dry run: to see what a mutation would do, ``plan`` it. Accepts
@@ -136,25 +380,25 @@ class Client:
         """
         return await self._executor.plan(intent, wallet, **kwargs)
 
-    async def execute(self, intent: Intent, wallet: Any, **kwargs) -> ExtrinsicResult:
+    async def execute(self, intent: Intent, wallet: WalletLike, **kwargs) -> ExtrinsicResult:
         """Sign and submit an intent through the policy-gated choke point.
 
         Raises :class:`PolicyError` if the intent violates the active policy.
         """
         return await self._executor.execute(intent, wallet, **kwargs)
 
-    async def execute_tool(self, op: str, args: dict, wallet: Any, **kwargs) -> ExtrinsicResult:
+    async def execute_tool(self, op: str, args: dict, wallet: WalletLike, **kwargs) -> ExtrinsicResult:
         """Build an intent by name from a dict of args and execute it."""
         return await self._executor.execute_tool(op, args, wallet, **kwargs)
 
-    async def submit_shielded(self, intent: Intent, wallet: Any, **kwargs) -> ExtrinsicResult:
+    async def submit_shielded(self, intent: Intent, wallet: WalletLike, **kwargs) -> ExtrinsicResult:
         """Submit an intent MEV-shielded (encrypted until block-author execution).
 
         Same policy gating as :meth:`execute`; see ``Executor.submit_shielded``.
         """
         return await self._executor.submit_shielded(intent, wallet, **kwargs)
 
-    async def submit_call(self, call, wallet: Any, **kwargs) -> ExtrinsicResult:
+    async def submit_call(self, call, wallet: WalletLike, **kwargs) -> ExtrinsicResult:
         """Escape hatch: submit any generated raw call (``subtensor.calls``) directly.
 
         No intent, no preview — an active :class:`Policy` refuses this unless it
@@ -197,6 +441,24 @@ class Client:
         return self._executor.tools()
 
     @property
+    def token_symbols(self) -> dict[int, str]:
+        """netuid -> chain-registered token symbol for this connection.
+
+        Populated by ``connect()`` (from the disk cache or one storage-map
+        scan); empty before connecting. Display-only metadata.
+        """
+        return self._substrate.token_symbols
+
+    def balance(self, rao: int, netuid: int = 0) -> Balance:
+        """A :class:`Balance` tagged with this connection's token symbol.
+
+        Use this (rather than ``Balance.from_rao``) when decoding a chain
+        amount you intend to display, so it renders with the subnet's real
+        symbol instead of the generic ``α`` + netuid fallback.
+        """
+        return self._substrate.balance(rao, netuid)
+
+    @property
     def policy(self) -> Optional[Policy]:
         return self._executor.policy
 
@@ -208,6 +470,25 @@ class Client:
 
     async def connect(self) -> "Client":
         await self._substrate.connect()
+        # Balances render with each subnet's chain-registered token symbol; the
+        # map is installed on THIS connection (never process-global, so clients
+        # on different networks can't clobber each other). Symbols essentially
+        # never change, so the disk cache saves a full storage-map scan on
+        # every connect; it refreshes on TTL expiry.
+        if config.token_symbols_fresh(self.network):
+            self._substrate.token_symbols = config.load_token_symbols(self.network)
+        else:
+            try:
+                symbols = await read_registry.token_symbols(self)
+            except ChainError:
+                pass  # symbols are display-only; never fail a connect over them
+            else:
+                self._substrate.token_symbols = symbols
+                try:
+                    config.save_token_symbols(self.network, symbols)
+                except OSError:
+                    pass  # cache write is best-effort
+
         return self
 
     async def close(self) -> None:
@@ -235,3 +516,24 @@ class Client:
 
     def __repr__(self) -> str:
         return f"Client(network={self.network!r}, endpoint={self.endpoint!r})"
+
+
+def _extrinsic_value(extrinsic: Any) -> Any:
+    """The plain decoded value of a transport extrinsic (None for decode failures)."""
+    return getattr(extrinsic, "value", extrinsic)
+
+
+def _timestamp_from_extrinsics(extrinsics: list) -> Optional[datetime]:
+    """The block's timestamp from its ``Timestamp.set`` inherent, or None.
+
+    Every block carries exactly one such inherent, so this avoids a second
+    storage round-trip when the extrinsics decoded cleanly.
+    """
+    for value in extrinsics:
+        call = value.get("call") if isinstance(value, dict) else None
+        if not isinstance(call, dict) or call.get("call_module") != "Timestamp":
+            continue
+        args = call.get("call_args") or []
+        if args and isinstance(args[0], dict) and args[0].get("value") is not None:
+            return datetime.fromtimestamp(int(args[0]["value"]) / 1000, tz=timezone.utc)
+    return None

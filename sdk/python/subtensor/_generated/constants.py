@@ -2,15 +2,17 @@
 
 Regenerate with: python -m codegen <ws-endpoint>
 Spec version: 424
+
+Pallet constant descriptors: unpack into substrate.constant.
 """
-"""Pallet constant descriptors: unpack into substrate.constant."""
+from typing import NamedTuple
 
 
-class Item(tuple):
+class Item(NamedTuple):
     """A (container, name) pair; unpack into query/constant calls."""
 
-    def __new__(cls, container: str, name: str):
-        return super().__new__(cls, (container, name))
+    container: str
+    name: str
 
 
 class System:

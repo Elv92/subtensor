@@ -1,0 +1,69 @@
+---
+title: The network
+description: Subnets, miners, validators, stakers, TAO and alpha, emissions, and epochs.
+---
+
+Bittensor is a blockchain (the **subtensor** chain) that coordinates and pays
+for useful work. The work itself happens off-chain, inside **subnets**; the
+chain records who participates, measures agreement about who is doing good
+work, and emits the network's token, **TAO**, accordingly.
+
+## Subnets
+
+A subnet is an independent incentive market, identified by an integer
+**netuid**. Each subnet has:
+
+- an **owner** — the coldkey that registered it, who defines the incentive
+  mechanism and sets its [hyperparameters](/docs/tx/set-hyperparameter);
+- **miners** — hotkeys registered on the subnet that produce whatever the
+  subnet's mechanism demands (inference, storage, predictions, ...);
+- **validators** — hotkeys with enough stake behind them to hold a validator
+  permit; they score miners by [setting weights](/docs/tx/set-weights);
+- a liquidity pool pairing TAO with the subnet's own token, **alpha**.
+
+Netuid 0 is the **root network**: registration there is stake-based rather than
+burn-based, and the top root members by stake form the **senate** that votes on
+governance proposals.
+
+Subnet slots are limited. Registering on a full subnet
+([`burned-register`](/docs/tx/burned-register)) evicts the lowest-ranked
+non-immune neuron; a freshly registered neuron is protected for an immunity
+period, then competes like everyone else.
+
+## TAO and alpha
+
+TAO is the chain's native token (1 TAO = 10⁹ rao). Each subnet also has its own
+token, alpha, traded against TAO in the subnet's pool. Staking TAO into a
+subnet swaps it to that subnet's alpha at the pool price; unstaking swaps back.
+Alpha on one subnet is not worth alpha on another — the SDK's
+[`Balance` type](/docs/concepts/money) enforces this at the type level.
+
+Spot prices come from the [`alpha-price`](/docs/query/alpha-price) read, and
+[`quote-stake`](/docs/query/quote-stake) / [`quote-unstake`](/docs/query/quote-unstake)
+simulate a swap including fees and slippage before you commit.
+
+## Emissions and epochs
+
+The chain continuously emits TAO to subnets, and within each subnet to its
+participants, in proportion to measured value. Each subnet runs on a cycle (its
+**tempo**): validators submit weights over miners during the epoch, and at the
+epoch boundary Yuma Consensus combines those weights — weighted by validator
+stake — into ranks, trust, and incentive, which set each participant's share of
+the emission. Delegated stake earns a share of its validator's dividends, minus
+the validator's [take](/docs/tx/set-take).
+
+The [`epoch-status`](/docs/query/epoch-status) and
+[`blocks-until-next-epoch`](/docs/query/blocks-until-next-epoch) reads expose
+the timing; [`metagraph`](/docs/query/metagraph) returns the full per-neuron
+state of a subnet in one call.
+
+## Who signs what
+
+Every account is an **ss58 address** backed by a keypair. Operations divide by
+signer:
+
+- **coldkey** — owns funds: transfers, staking, registration, subnet ownership.
+- **hotkey** — operates on subnets: weights, serving an axon, senate votes.
+
+The [wallets page](/docs/concepts/wallets) covers how the two keys relate and
+how to manage them.

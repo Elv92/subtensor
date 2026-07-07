@@ -9,10 +9,11 @@ reads.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .._generated import calls
+from ._money import UNBOUNDED, Spend
 from .base import Intent
 from .registry import register
 
@@ -22,18 +23,34 @@ from .registry import register
 class RegisterLeasedNetwork(Intent):
     """Register a new crowdloan-funded leased subnet.
 
-    ``emissions_share`` is the percent (0-100) of emissions paid to contributors
-    as dividends. ``end_block`` is when the lease ends and the beneficiary can
-    take ownership; omit it for a perpetual lease. Must be called in a crowdloan
-    context (the crowdloan's funds pay the lock cost).
+    Creates a subnet paid for by a crowdloan rather than a single coldkey: the
+    crowdloan's funds cover the network lock cost (any leftover is charged to
+    the beneficiary), contributors earn ``emissions_share`` percent of the
+    subnet's emissions as dividends, and the beneficiary operates the subnet
+    through a proxy. Must be dispatched in a crowdloan context — it fails as a
+    standalone call. The cost is not cheaply boundable up front, so a
+    configured spend cap blocks this until raised. With an ``end_block`` the
+    beneficiary can later take full ownership via ``terminate_lease``; without
+    one the lease is perpetual and ownership never transfers.
     """
 
     op = "register_leased_network"
     signer = "coldkey"
     wraps = (("SubtensorModule", "register_leased_network"),)
 
-    emissions_share: int
-    end_block: Optional[int] = None
+    emissions_share: int = field(
+        metadata={
+            "help": "Percent (0-100) of the subnet's emissions paid to crowdloan "
+            "contributors as dividends."
+        }
+    )
+    end_block: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "Block at which the lease ends and the beneficiary may take "
+            "ownership; omit for a perpetual lease."
+        },
+    )
 
     def __post_init__(self):
         if not 0 <= self.emissions_share <= 100:
@@ -50,23 +67,37 @@ class RegisterLeasedNetwork(Intent):
         horizon = f"until block {self.end_block}" if self.end_block is not None else "perpetual"
         return f"register leased subnet ({self.emissions_share}% to contributors, {horizon})"
 
-    def spend_tao(self) -> float:
+    def spend(self) -> Spend:
         # Lock cost is drawn from crowdloan funds with a leftover charged to the
         # beneficiary; not cheaply boundable, so a spend cap must block it.
-        return float("inf")
+        return UNBOUNDED
 
 
 @register
 @dataclass
 class TerminateLease(Intent):
-    """Terminate an ended lease and take subnet ownership (beneficiary only)."""
+    """Terminate an ended lease and take subnet ownership (beneficiary only).
+
+    Ends the lease and transfers full subnet ownership to the beneficiary:
+    contributor dividends stop and the subnet becomes an ordinary owned
+    subnet. Only the lease's beneficiary can call it, and only after the
+    lease's end block has passed — earlier attempts fail, and perpetual leases
+    (no end block) can never be terminated this way. Check the lease's end
+    block with the ``lease`` read before calling.
+    """
 
     op = "terminate_lease"
     signer = "coldkey"
     wraps = (("SubtensorModule", "terminate_lease"),)
 
-    lease_id: int
-    hotkey_ss58: Optional[str] = None  # beneficiary hotkey to mark as owner; defaults to wallet's
+    lease_id: int = field(metadata={"help": "Lease to terminate (see the leases read)."})
+    hotkey_ss58: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Beneficiary hotkey recorded as the subnet's owner hotkey; defaults to "
+            "the wallet's hotkey."
+        },
+    )
 
     async def build(self, substrate, wallet: Any):
         hotkey = self.hotkey_ss58 or wallet.hotkey.ss58_address

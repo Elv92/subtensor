@@ -7,9 +7,9 @@ from typing import Optional
 
 import typer
 
+from ...balance import Balance
 from ..context import AppContext, address_cli_name, ctx_of, ss58_param_help
-from ..globals import with_globals
-from ..helpers import runtime_api
+from ..globals import with_globals, with_tx_globals
 
 app = typer.Typer(no_args_is_help=True, help="Covered long/short derivatives.")
 
@@ -25,18 +25,26 @@ def _side(side: str) -> str:
 @with_globals
 def quote_open(
     ctx: typer.Context,
-    side: str = typer.Option(..., "--side", help="short or long"),
-    netuid: int = typer.Option(..., "--netuid"),
-    amount_tao: float = typer.Option(..., "--amount", help="Position input in TAO."),
+    side: str = typer.Option(..., "--side", help="Position side: short or long."),
+    netuid: int = typer.Option(
+        ..., "--netuid", help="Subnet whose derivative market to quote."
+    ),
+    amount_tao: float = typer.Option(
+        ..., "--amount-tao", "--amount", help="Position input, in TAO."
+    ),
 ):
-    """Quote opening a derivative position."""
+    """Quote opening a derivative position.
+
+    Read-only: asks the runtime API what opening the position would cost
+    right now, without signing or submitting anything.
+    """
     app_ctx: AppContext = ctx_of(ctx)
     side_name = _side(side)
-    rao = int(amount_tao * 1_000_000_000)
+    rao = Balance.from_tao(amount_tao).rao
 
     async def _op(client):
         method = f"quote_open_{side_name}"
-        return await runtime_api(client, "DerivativesRuntimeApi", method, [netuid, rao])
+        return await client.runtime(("DerivativesRuntimeApi", method), [netuid, rao])
 
     quote = app_ctx.run(_op)
     app_ctx.output.detail(
@@ -48,8 +56,10 @@ def quote_open(
 @with_globals
 def show_positions(
     ctx: typer.Context,
-    side: str = typer.Option(..., "--side", help="short or long"),
-    netuid: Optional[int] = typer.Option(None, "--netuid"),
+    side: str = typer.Option(..., "--side", help="Position side: short or long."),
+    netuid: Optional[int] = typer.Option(
+        None, "--netuid", help="Show only the position on this subnet; omit to list all."
+    ),
     coldkey_ss58: Optional[str] = typer.Option(
         None, address_cli_name("coldkey_ss58"), help=ss58_param_help("coldkey_ss58")
     ),
@@ -62,9 +72,9 @@ def show_positions(
     async def _op(client):
         if netuid is None:
             method = f"get_{side_name}_positions"
-            return await runtime_api(client, "DerivativesRuntimeApi", method, [owner])
+            return await client.runtime(("DerivativesRuntimeApi", method), [owner])
         method = f"get_{side_name}_position"
-        return await runtime_api(client, "DerivativesRuntimeApi", method, [owner, netuid])
+        return await client.runtime(("DerivativesRuntimeApi", method), [owner, netuid])
 
     positions = app_ctx.run(_op)
     app_ctx.output.detail(f"{side_name} positions", positions)
@@ -74,8 +84,10 @@ def show_positions(
 @with_globals
 def show_market(
     ctx: typer.Context,
-    side: str = typer.Option(..., "--side", help="short or long"),
-    netuid: int = typer.Option(..., "--netuid"),
+    side: str = typer.Option(..., "--side", help="Position side: short or long."),
+    netuid: int = typer.Option(
+        ..., "--netuid", help="Subnet whose derivative market to show."
+    ),
 ):
     """Show derivative market state for a subnet."""
     app_ctx: AppContext = ctx_of(ctx)
@@ -83,29 +95,41 @@ def show_market(
 
     async def _op(client):
         method = f"get_subnet_{side_name}_state"
-        return await runtime_api(client, "DerivativesRuntimeApi", method, [netuid])
+        return await client.runtime(("DerivativesRuntimeApi", method), [netuid])
 
     state = app_ctx.run(_op)
     app_ctx.output.detail(f"{side_name} market netuid {netuid}", state)
 
 
 @app.command("open")
-@with_globals
+@with_tx_globals
 def open_position(
     ctx: typer.Context,
-    side: str = typer.Option(..., "--side"),
-    netuid: int = typer.Option(..., "--netuid"),
-    amount_tao: float = typer.Option(..., "--amount"),
-    limit_price: Optional[int] = typer.Option(None, "--limit-price", help="Limit price in ppb."),
+    side: str = typer.Option(..., "--side", help="Position side: short or long."),
+    netuid: int = typer.Option(
+        ..., "--netuid", help="Subnet to open the position on."
+    ),
+    amount_tao: float = typer.Option(
+        ..., "--amount-tao", "--amount", help="Position input, in TAO."
+    ),
+    limit_price: Optional[int] = typer.Option(
+        None,
+        "--limit-price",
+        help="Limit price in parts-per-billion; omitted means no price limit.",
+    ),
     hotkey_ss58: Optional[str] = typer.Option(
         None, address_cli_name("hotkey_ss58"), help=ss58_param_help("hotkey_ss58")
     ),
 ):
-    """Open a derivative position via raw call (requires chain support)."""
+    """Open a derivative position via raw call (requires chain support).
+
+    Composes the raw SubtensorModule.open_short/open_long call, prompts for
+    confirmation, and signs with the hotkey.
+    """
     app_ctx: AppContext = ctx_of(ctx)
     hotkey = app_ctx.resolve_address("hotkey_ss58", hotkey_ss58)
     side_name = _side(side)
-    rao = int(amount_tao * 1_000_000_000)
+    rao = Balance.from_tao(amount_tao).rao
     target = f"SubtensorModule.open_{side_name}"
     params = {
         "hotkey": hotkey,
@@ -128,17 +152,21 @@ def open_position(
 
 
 @app.command("topup")
-@with_globals
+@with_tx_globals
 def top_up(
     ctx: typer.Context,
-    side: str = typer.Option(..., "--side"),
-    netuid: int = typer.Option(..., "--netuid"),
-    amount_tao: float = typer.Option(..., "--amount"),
+    side: str = typer.Option(..., "--side", help="Position side: short or long."),
+    netuid: int = typer.Option(
+        ..., "--netuid", help="Subnet the position lives on."
+    ),
+    amount_tao: float = typer.Option(
+        ..., "--amount-tao", "--amount", help="Top-up amount, in TAO."
+    ),
 ):
     """Top up an existing derivative position."""
     app_ctx: AppContext = ctx_of(ctx)
     side_name = _side(side)
-    rao = int(amount_tao * 1_000_000_000)
+    rao = Balance.from_tao(amount_tao).rao
     target = f"SubtensorModule.top_up_{side_name}"
     params = {"netuid": netuid, "amount": rao, "limit_price": None}
     app_ctx.confirm(f"submit {target}?")
@@ -156,14 +184,22 @@ def top_up(
 
 
 @app.command("close")
-@with_globals
+@with_tx_globals
 def close_position(
     ctx: typer.Context,
-    side: str = typer.Option(..., "--side"),
-    netuid: int = typer.Option(..., "--netuid"),
-    fraction: float = typer.Option(1.0, "--fraction", help="Fraction of position to close (0-1]."),
+    side: str = typer.Option(..., "--side", help="Position side: short or long."),
+    netuid: int = typer.Option(
+        ..., "--netuid", help="Subnet the position lives on."
+    ),
+    fraction: float = typer.Option(
+        1.0,
+        "--fraction",
+        help="Fraction of the position to close, above 0 and up to 1 (the default, all of it).",
+    ),
     from_holdings: bool = typer.Option(
-        False, "--from-holdings", help="Use close_* instead of close_*_self."
+        False,
+        "--from-holdings",
+        help="Submit the close_short/close_long call instead of the self-closing variant.",
     ),
 ):
     """Close (part of) a derivative position."""

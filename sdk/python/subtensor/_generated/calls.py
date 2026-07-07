@@ -3,21 +3,18 @@
 Regenerate with: python -m codegen <ws-endpoint>
 Spec version: 424
 """
-from typing import Any
+from typing import Any, NamedTuple
 
 
-class Call(tuple):
+class Call(NamedTuple):
     """A composed call target: (module, function, params).
 
-    A plain 3-tuple subclass so it is trivially inspectable and testable.
+    A typed 3-tuple, so calls are trivially inspectable and testable.
     """
 
-    def __new__(cls, module: str, function: str, params: dict[str, Any]):
-        return super().__new__(cls, (module, function, params))
-
-    module = property(lambda self: self[0])
-    function = property(lambda self: self[1])
-    params = property(lambda self: self[2])
+    module: str
+    function: str
+    params: dict[str, Any]
 
 
 class System:

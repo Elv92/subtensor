@@ -1,0 +1,48 @@
+name: Check SDK docs
+
+on:
+  pull_request:
+    paths:
+      - "sdk/**"
+      - ".github/workflows/check-sdk-docs.yml"
+
+jobs:
+  drift:
+    name: Generated docs match SDK registries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install SDK
+        run: pip install -e sdk/python
+
+      - name: Check generated docs are fresh
+        run: python sdk/docs/scripts/generate.py --check
+
+  build:
+    name: Docs site builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: sdk/docs/pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+        working-directory: sdk/docs
+
+      - name: Build
+        run: pnpm build
+        working-directory: sdk/docs

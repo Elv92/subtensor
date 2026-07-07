@@ -12,10 +12,11 @@ Read current values back with the ``subnet_hyperparameters`` read.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .._generated import calls
+from ..hyperparams import to_raw
 from .base import Intent
 from .registry import register
 
@@ -42,23 +43,40 @@ OWNER_HYPERPARAMETERS: dict[str, tuple[str, bool]] = {
     "owner_cut_auto_lock_enabled": ("sudo_set_owner_cut_auto_lock_enabled", True),
 }
 
+HYPERPARAMETER_NAME_HELP = (
+    "Hyperparameter to set. One of: " + ", ".join(sorted(OWNER_HYPERPARAMETERS)) + "."
+)
+
+HYPERPARAMETER_VALUE_HELP = (
+    "New value. Give the raw on-chain integer, or the human form as a float or a string "
+    "with a decimal point (a 0..1 fraction for normalized parameters, a TAO amount for "
+    "rao parameters). Boolean parameters take true/false or 0/1."
+)
+
 
 @register
 @dataclass
 class SetHyperparameter(Intent):
     """Set an owner-settable subnet hyperparameter (btcli ``sudo set``).
 
-    ``name`` is one of ``OWNER_HYPERPARAMETERS``; ``value`` is the numeric value
-    (boolean hyperparameters take 0/1). The signer must be the subnet owner.
+    Dispatches the matching AdminUtils ``sudo_set_*`` call for the named
+    parameter. The signer must be the subnet's owner coldkey; root-only
+    parameters are not available here and must go through the raw-call escape
+    hatch. Changes take effect on chain immediately and shape subnet economics
+    and consensus (registration costs, weight rules, immunity, transfers), so
+    verify the raw value before sending — ``value`` accepts either the raw
+    on-chain integer or a human form that is converted for you. Some
+    parameters are rate-limited by the chain, so a quick follow-up change can
+    fail. Read current values back with the ``subnet_hyperparameters`` read.
     """
 
     op = "set_hyperparameter"
     signer = "coldkey"
     wraps = tuple(("AdminUtils", method) for method, _ in OWNER_HYPERPARAMETERS.values())
 
-    netuid: int
-    name: str
-    value: int
+    netuid: int = field(metadata={"help": "Subnet to configure; the signer must be its owner."})
+    name: str = field(metadata={"help": HYPERPARAMETER_NAME_HELP})
+    value: int | float | str = field(metadata={"help": HYPERPARAMETER_VALUE_HELP})
 
     def __post_init__(self):
         if self.name not in OWNER_HYPERPARAMETERS:
@@ -66,6 +84,7 @@ class SetHyperparameter(Intent):
                 f"unknown or owner-unsettable hyperparameter {self.name!r}; "
                 f"settable: {sorted(OWNER_HYPERPARAMETERS)}"
             )
+        self.value = to_raw(self.name, self.value)
 
     async def build(self, substrate, wallet: Any):
         method, is_bool = OWNER_HYPERPARAMETERS[self.name]

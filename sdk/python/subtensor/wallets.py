@@ -227,19 +227,22 @@ def create(
 
 
 def regen_coldkey(
-    mnemonic: str,
+    mnemonic: str | None = None,
     name: str = "default",
     path: str = DEFAULT_WALLET_PATH,
     *,
+    seed: str | None = None,
     use_password: bool = True,
     overwrite: bool = False,
     crypto_type: int = DEFAULT_CRYPTO_TYPE,
 ) -> Wallet:
+    """Regenerate a coldkey from a mnemonic or a 32-byte hex seed (exactly one)."""
     wallet = Wallet(name=name, path=path)
     # suppress=True stops the wallet lib from echoing the mnemonic back to stdout;
     # the caller already supplied it, so reprinting only widens secret exposure.
     wallet.regenerate_coldkey(
         mnemonic=mnemonic,
+        seed=seed,
         use_password=use_password,
         overwrite=overwrite,
         suppress=True,
@@ -249,17 +252,20 @@ def regen_coldkey(
 
 
 def regen_hotkey(
-    mnemonic: str,
+    mnemonic: str | None = None,
     name: str = "default",
     hotkey: str = "default",
     path: str = DEFAULT_WALLET_PATH,
     *,
+    seed: str | None = None,
     overwrite: bool = False,
     crypto_type: int = DEFAULT_CRYPTO_TYPE,
 ) -> Wallet:
+    """Regenerate a hotkey from a mnemonic or a 32-byte hex seed (exactly one)."""
     wallet = Wallet(name=name, hotkey=hotkey, path=path)
     wallet.regenerate_hotkey(
         mnemonic=mnemonic,
+        seed=seed,
         use_password=False,
         overwrite=overwrite,
         suppress=True,
@@ -353,8 +359,19 @@ def encrypt_message(
     message: str,
     recipient_ss58: str,
 ) -> dict[str, str]:
-    """Encrypt a message for a recipient's ED25519 public key."""
-    ciphertext = Keypair.encrypt_for(recipient_ss58, message.encode("utf-8"))
+    """Encrypt a message for a recipient's ED25519 public key.
+
+    Only ed25519 recipient keys work: encryption converts the public key to
+    X25519, and sr25519 keys (the wallet default) are not valid ed25519 points.
+    """
+    try:
+        ciphertext = Keypair.encrypt_for(recipient_ss58, message.encode("utf-8"))
+    except ValueError as error:
+        raise ValueError(
+            f"cannot encrypt for {recipient_ss58}: the recipient public key is not "
+            f"a valid ed25519 key ({error}); it is most likely sr25519, the wallet "
+            "default scheme"
+        ) from error
     return {"ciphertext": "0x" + ciphertext.hex(), "recipient": recipient_ss58}
 
 

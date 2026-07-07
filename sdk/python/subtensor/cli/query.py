@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import asdict, is_dataclass
+from datetime import datetime
 from typing import Any, Optional
 
 import typer
@@ -25,6 +26,8 @@ def _jsonable(obj: Any) -> Any:
     """Normalize a read result to JSON-friendly primitives."""
     if isinstance(obj, Balance):
         return str(obj)
+    if isinstance(obj, datetime):
+        return obj.isoformat(timespec="seconds")
     if is_dataclass(obj) and not isinstance(obj, type):
         return {k: _jsonable(v) for k, v in asdict(obj).items()}
     if isinstance(obj, dict):
@@ -62,6 +65,7 @@ def _make_command(name: str, spec):
         inspect.Parameter("ctx", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=typer.Context)
     ]
     annotations: dict[str, Any] = {"ctx": typer.Context}
+    fetch_params = inspect.signature(spec.fetch).parameters
     for pname, ptype in spec.params.items():
         cli_name = (
             address_cli_name(pname)
@@ -71,20 +75,34 @@ def _make_command(name: str, spec):
         # Own-key params may be omitted (fall back to the configured wallet);
         # all *_ss58 params also accept local wallet/hotkey names.
         wallet_defaulted = pname in ("hotkey_ss58", "coldkey_ss58")
-        help_text = ss58_param_help(pname) if pname.endswith("_ss58") else None
+        # Declared meaning first, then the input-shape note (ss58 resolution,
+        # comma-separated lists) — same composition as the tx commands.
+        input_note = ss58_param_help(pname) if pname.endswith("_ss58") else None
         if ptype == "array":
-            help_text = "Comma-separated list."
+            input_note = f"{input_note} Comma-separated." if input_note else "Comma-separated list."
+        declared = spec.param_docs.get(pname)
+        help_text = " ".join(part for part in (declared, input_note) if part) or None
         base_type = _TYPES.get(ptype, str)
+        # A default on the fetch function (e.g. mechid=0) makes the option optional.
+        fetch_default = (
+            fetch_params[pname].default if pname in fetch_params else inspect.Parameter.empty
+        )
+        if wallet_defaulted:
+            option_default: Any = None
+        elif fetch_default is not inspect.Parameter.empty:
+            option_default = fetch_default
+        else:
+            option_default = ...
         annotations[pname] = Optional[base_type] if wallet_defaulted else base_type
         params.append(
             inspect.Parameter(
                 pname,
                 inspect.Parameter.KEYWORD_ONLY,
-                default=typer.Option(None if wallet_defaulted else ..., cli_name, help=help_text),
+                default=typer.Option(option_default, cli_name, help=help_text),
                 annotation=annotations[pname],
             )
         )
-    for p in g.parameters():
+    for p in g.parameters("read"):
         annotations[p.name] = p.annotation
         params.append(p)
     command.__signature__ = inspect.Signature(params)
@@ -94,8 +112,11 @@ def _make_command(name: str, spec):
 
 
 def build_query_app() -> typer.Typer:
-    """Assemble the `query` group with one generated subcommand per registered read."""
+    """Assemble the `query` group with one generated subcommand per registered read,
+    grouped in --help by each read's declared category."""
     app = typer.Typer(no_args_is_help=True, help="Query chain state (generated from reads).")
-    for name, spec in sorted(REGISTRY.items()):
-        app.command(name.replace("_", "-"))(_make_command(name, spec))
+    for name, spec in sorted(REGISTRY.items(), key=lambda item: (item[1].category, item[0])):
+        app.command(name.replace("_", "-"), rich_help_panel=spec.category)(
+            _make_command(name, spec)
+        )
     return app

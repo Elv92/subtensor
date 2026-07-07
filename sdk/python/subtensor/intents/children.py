@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .._generated import calls
@@ -11,23 +11,42 @@ from ..settings import U16_MAX
 from .base import Intent
 from .registry import register
 
+HOTKEY_HELP = "Hotkey the operation applies to."
+TAKE_HELP = (
+    "New take as a u16 proportion (fraction of 65535, e.g. 5898 is about 9 percent). "
+    "The chain enforces its configured take bounds."
+)
+
 
 @register
 @dataclass
 class SetChildren(Intent):
-    """Assign child hotkeys with proportions on a subnet.
+    """Assign child hotkeys with stake-weight proportions on a subnet.
 
-    ``children`` is a list of ``[proportion, hotkey_ss58]`` pairs, where
-    proportion is a u64 share (of u64::MAX) delegated to that child.
+    Childkeys let a parent hotkey delegate a fraction of its stake weight to
+    other hotkeys on one subnet — commonly used to split validation duties or
+    point stake at a separate validating key without moving the stake itself.
+    Each entry in ``children`` is a pair of proportion and hotkey ss58, where
+    proportion is a u64 share of u64::MAX; the proportions must not sum past
+    the whole. The call replaces the full child set, so pass an empty list to
+    revoke all children. Signed by the coldkey that owns the parent hotkey,
+    and subject to the chain's childkey rate limit, with changes taking effect
+    after a chain-defined cooldown rather than instantly.
     """
 
     op = "set_children"
     signer = "coldkey"
     wraps = (("SubtensorModule", "set_children"),)
 
-    netuid: int
-    children: list
-    hotkey_ss58: Optional[str] = None  # defaults to the wallet's hotkey
+    netuid: int = field(metadata={"help": "Subnet on which the child relationships apply."})
+    children: list = field(
+        metadata={
+            "help": "JSON list of proportion-and-hotkey pairs; each proportion is a u64 "
+            "share of u64::MAX of the parent's stake weight delegated to that child. An "
+            "empty list revokes all children."
+        }
+    )
+    hotkey_ss58: Optional[str] = field(default=None, metadata={"help": HOTKEY_HELP})
 
     async def build(self, substrate, wallet: Any):
         hotkey = self.hotkey_ss58 or wallet.hotkey.ss58_address
@@ -46,15 +65,23 @@ class SetChildren(Intent):
 @register
 @dataclass
 class SetChildkeyTake(Intent):
-    """Set the childkey take (u16 proportion) for a hotkey on a subnet."""
+    """Set the childkey take for a hotkey on a subnet.
+
+    The childkey take is the fraction of emissions a child hotkey keeps from
+    the stake weight its parents delegate to it, before passing the remainder
+    through. It is set per subnet, unlike the global delegate take. Signed by
+    the coldkey that owns the child hotkey. The chain caps the take at its
+    configured maximum and rate-limits changes, so a too-high value or a quick
+    successive change fails.
+    """
 
     op = "set_childkey_take"
     signer = "coldkey"
     wraps = (("SubtensorModule", "set_childkey_take"),)
 
-    netuid: int
-    take: int
-    hotkey_ss58: Optional[str] = None
+    netuid: int = field(metadata={"help": "Subnet the childkey take applies to."})
+    take: int = field(metadata={"help": TAKE_HELP})
+    hotkey_ss58: Optional[str] = field(default=None, metadata={"help": HOTKEY_HELP})
 
     async def build(self, substrate, wallet: Any):
         hotkey = self.hotkey_ss58 or wallet.hotkey.ss58_address
@@ -71,14 +98,23 @@ class SetChildkeyTake(Intent):
 @register
 @dataclass
 class IncreaseTake(Intent):
-    """Increase the delegate take (u16 proportion) of a hotkey."""
+    """Increase the delegate take of a hotkey.
+
+    The delegate take is the fraction of staking emissions a delegate hotkey
+    keeps for itself before distributing the rest to its nominators. This call
+    only moves the take upward: the chain rejects values at or below the
+    current take, values above the configured maximum, and increases made
+    sooner than the take rate limit allows. Signed by the coldkey that owns
+    the hotkey. Use ``set_take`` if you just want to land on an absolute value
+    without tracking the direction yourself.
+    """
 
     op = "increase_take"
     signer = "coldkey"
     wraps = (("SubtensorModule", "increase_take"),)
 
-    take: int
-    hotkey_ss58: Optional[str] = None
+    take: int = field(metadata={"help": TAKE_HELP})
+    hotkey_ss58: Optional[str] = field(default=None, metadata={"help": HOTKEY_HELP})
 
     async def build(self, substrate, wallet: Any):
         hotkey = self.hotkey_ss58 or wallet.hotkey.ss58_address
@@ -93,14 +129,22 @@ class IncreaseTake(Intent):
 @register
 @dataclass
 class DecreaseTake(Intent):
-    """Decrease the delegate take (u16 proportion) of a hotkey."""
+    """Decrease the delegate take of a hotkey.
+
+    The delegate take is the fraction of staking emissions a delegate hotkey
+    keeps for itself before distributing the rest to its nominators. This call
+    only moves the take downward — the chain rejects values at or above the
+    current take — and unlike increases it is not rate limited, so lowering
+    your take is always available. Signed by the coldkey that owns the hotkey.
+    Use ``set_take`` to land on an absolute value without tracking direction.
+    """
 
     op = "decrease_take"
     signer = "coldkey"
     wraps = (("SubtensorModule", "decrease_take"),)
 
-    take: int
-    hotkey_ss58: Optional[str] = None
+    take: int = field(metadata={"help": TAKE_HELP})
+    hotkey_ss58: Optional[str] = field(default=None, metadata={"help": HOTKEY_HELP})
 
     async def build(self, substrate, wallet: Any):
         hotkey = self.hotkey_ss58 or wallet.hotkey.ss58_address
@@ -115,10 +159,15 @@ class DecreaseTake(Intent):
 @register
 @dataclass
 class SetTake(Intent):
-    """Set the delegate take to an absolute u16 value.
+    """Set the delegate take to an absolute value.
 
-    Sugar over the chain's directional ``increase_take`` / ``decrease_take``: it
-    reads the current take and dispatches whichever call moves it to ``take``.
+    The delegate take is the fraction of staking emissions a delegate hotkey
+    keeps before distributing the rest to its nominators. This is sugar over
+    the chain's directional ``increase_take`` / ``decrease_take``: it reads the
+    current take and dispatches whichever call moves it to ``take``, so you do
+    not need to know the current value. Signed by the coldkey that owns the
+    hotkey. If the move is upward it inherits the increase path's constraints
+    (take maximum and rate limit on increases).
     """
 
     op = "set_take"
@@ -128,8 +177,8 @@ class SetTake(Intent):
         ("SubtensorModule", "decrease_take"),
     )
 
-    take: int
-    hotkey_ss58: Optional[str] = None
+    take: int = field(metadata={"help": TAKE_HELP})
+    hotkey_ss58: Optional[str] = field(default=None, metadata={"help": HOTKEY_HELP})
 
     async def build(self, substrate, wallet: Any):
         hotkey = self.hotkey_ss58 or wallet.hotkey.ss58_address
@@ -143,4 +192,4 @@ class SetTake(Intent):
         return await substrate.compose(call)
 
     def summary(self) -> str:
-        return f"set delegate take to {self.take}/{U16_MAX}"
+        return f"set delegate take to {self.take / U16_MAX:.2%} ({self.take} as u16)"

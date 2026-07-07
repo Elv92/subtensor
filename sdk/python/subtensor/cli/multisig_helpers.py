@@ -12,8 +12,7 @@ from bittensor_wallet.utils import is_valid_ss58_address
 from .. import config as cfg
 from .. import wallets
 from .._generated import storage as st
-from .._transport.errors import BlockNotFound, StateDiscardedError, SubstrateRequestException
-from ..result import ExtrinsicResult
+from ..result import ChainError, ExtrinsicResult
 
 
 def hex_bytes(value: bytes | str) -> str:
@@ -25,24 +24,92 @@ def hex_bytes(value: bytes | str) -> str:
     return text if text.startswith("0x") else "0x" + text
 
 
-def signatory_labels(app_ctx, refs: list[str]) -> dict[str, str]:
-    """Map ss58 addresses to short labels (preset ref, address-book name, or ss58)."""
-    labels: dict[str, str] = {}
-    for ref in refs:
-        address = app_ctx.resolve_address("coldkey_ss58", ref)
-        if address:
-            labels[address] = ref
+def _soft_resolve_coldkey(app_ctx, ref: str) -> Optional[str]:
+    """Resolve a coldkey ref without exiting the CLI."""
+    if is_valid_ss58_address(ref):
+        return ref
+    booked = cfg.get_address(ref)
+    if booked:
+        return booked
+    try:
+        return wallets.open_wallet(name=ref, path=app_ctx.wallet_path).coldkeypub.ss58_address
+    except Exception:
+        return None
+
+
+def _address_book_name(ss58: str) -> Optional[str]:
     for entry in cfg.load_addresses():
-        address = entry.get("address")
-        name = entry.get("name")
-        if address and name and address not in labels:
-            labels[str(address)] = str(name)
-    return labels
+        if str(entry.get("address")) == ss58:
+            name = entry.get("name")
+            return str(name) if name else None
+    return None
+
+
+def _wallet_name_for_ss58(app_ctx, ss58: str) -> Optional[str]:
+    try:
+        for coldkey in wallets.list_wallets_detailed(app_ctx.wallet_path):
+            if coldkey.ss58 == ss58:
+                return coldkey.name
+    except Exception:
+        return None
+        return None
 
 
 def _portable_signatory_ref(ref: str) -> bool:
     """True when ``ref`` is an explicit alias/wallet name, not a bare ss58 address."""
     return not is_valid_ss58_address(ref)
+
+
+def resolve_signatory_name(
+    app_ctx,
+    ss58: str,
+    *,
+    preset_ref: Optional[str] = None,
+) -> str:
+    """Best short name for an ss58: preset alias, local wallet, address book, then ss58."""
+    if preset_ref and _portable_signatory_ref(preset_ref):
+        return preset_ref
+    wallet = _wallet_name_for_ss58(app_ctx, ss58)
+    if wallet:
+        return wallet
+    booked = _address_book_name(ss58)
+    if booked:
+        return booked
+    return ss58
+
+
+def format_signatory_display(ss58: str, name: Optional[str] = None) -> str:
+    """Human-readable signer label, e.g. ``vune (5Fev...)``."""
+    label = name or ss58
+    if label != ss58:
+        return f"{label} ({ss58})"
+    return ss58
+
+
+def format_multisig_display(address: Optional[str], preset: Optional[str] = None) -> Optional[str]:
+    """Human-readable multisig label, e.g. ``finney-trium (5DcS...)``."""
+    if preset and address:
+        return f"{preset} ({address})"
+    return address or preset
+
+
+def signatory_labels(
+    app_ctx,
+    refs: list[str],
+    *,
+    signatories: Optional[list[str]] = None,
+) -> dict[str, str]:
+    """Map ss58 addresses to the best local short name for each signatory."""
+    preset_by_addr: dict[str, str] = {}
+    for ref in refs:
+        address = _soft_resolve_coldkey(app_ctx, ref)
+        if address:
+            preset_by_addr[address] = ref
+    targets = signatories if signatories is not None else list(preset_by_addr.keys())
+    return {
+        ss58: resolve_signatory_name(app_ctx, ss58, preset_ref=preset_by_addr.get(ss58))
+        for ss58 in targets
+    }
 
 
 def _replay_wallet_label(addr_to_ref: dict[str, str], ss58: str) -> str:
@@ -137,8 +204,8 @@ def resolve_multisig(
         entry = cfg.get_multisig(multisig_name)
         if entry is None:
             raise ValueError(
-                f"unknown multisig {multisig_name!r}; run `subtensor wallet make-multi -w NAME` "
-                "or `subtensor config multisigs`"
+                f"unknown multisig {multisig_name!r}; run `subtensor multisig add NAME` "
+                "or `subtensor multisig list`"
             )
         refs = list(entry["signatories"])
         return int(entry["threshold"]), _resolve_stored_signatories(app_ctx, refs), multisig_name, refs
@@ -173,19 +240,6 @@ def resolve_multisig_preset(app_ctx, name: str) -> tuple[int, list[str], list[st
     if threshold is None:
         raise ValueError(f"unknown multisig {name!r}")
     return threshold, signatories, refs
-
-
-def _soft_resolve_coldkey(app_ctx, ref: str) -> Optional[str]:
-    """Resolve a coldkey ref without exiting the CLI."""
-    if is_valid_ss58_address(ref):
-        return ref
-    booked = cfg.get_address(ref)
-    if booked:
-        return booked
-    try:
-        return wallets.open_wallet(name=ref, path=app_ctx.wallet_path).coldkeypub.ss58_address
-    except Exception:
-        return None
 
 
 async def multisig_list_records(
@@ -276,7 +330,7 @@ def _call_spec_from_decoded(raw_call: Any) -> Optional[dict[str, Any]]:
 async def decode_call_data(client, call_data: str) -> Optional[dict[str, Any]]:
     """Decode scale-encoded call bytes into target, params, and sudo flag."""
     try:
-        raw = await client._substrate.raw.decode_scale("Call", call_data)
+        raw = await client.decode_scale("Call", call_data)
     except Exception:
         return None
     spec = _call_spec_from_decoded(raw)
@@ -325,18 +379,18 @@ async def fetch_call_from_timepoint(
 ) -> Optional[dict[str, Any]]:
     """Recover a multisig inner call from the opening ``as_multi`` extrinsic."""
     try:
-        block = await client._substrate.raw.get_block(block_number=height)
-    except (StateDiscardedError, BlockNotFound):
+        info = await client.block_info(height)
+    except ChainError:
+        # Pruned or unreachable block (block_info already retried the archive
+        # pool); the call spec is simply unrecoverable from this timepoint.
         return None
-    except SubstrateRequestException:
+    if info is None:
         return None
-    if not block:
+    if index < 0 or index >= len(info.extrinsics):
         return None
-    extrinsics = block.get("extrinsics") or []
-    if index < 0 or index >= len(extrinsics):
-        return None
-    extrinsic = extrinsics[index]
-    value = extrinsic.value if hasattr(extrinsic, "value") else extrinsic
+    value = info.extrinsics[index]
+    if not isinstance(value, dict):
+        return None  # the opening extrinsic failed to decode
     outer = value.get("call") or {}
     if outer.get("call_module") != "Multisig":
         return None
@@ -449,7 +503,7 @@ async def build_pending_followup(
     signer_role: str = "coldkey",
 ) -> dict[str, Any]:
     """Build a pending multisig record with optional co-signer commands."""
-    labels = signatory_labels(app_ctx, signatory_refs)
+    labels = signatory_labels(app_ctx, signatory_refs, signatories=signatories)
     approvals = list(pending.get("approvals") or [])
     remaining = [s for s in signatories if s not in approvals]
     call_data = None
@@ -466,14 +520,10 @@ async def build_pending_followup(
 
     co_signer_commands = []
     if target:
-        addr_to_ref: dict[str, str] = {}
-        for index, addr in enumerate(signatories):
-            if index < len(signatory_refs):
-                addr_to_ref[addr] = signatory_refs[index]
-            else:
-                addr_to_ref[addr] = addr
+        addr_to_ref = {addr: labels.get(addr, addr) for addr in signatories}
         for ss58 in remaining:
-            label = labels.get(ss58, ss58)
+            name = labels.get(ss58, ss58)
+            label = format_signatory_display(ss58, name)
             wallet_label = _replay_wallet_label(addr_to_ref, ss58)
             other_labels = _replay_other_signatory_refs(signatories, addr_to_ref, ss58)
             if other_labels is not None and not _portable_signatory_ref(wallet_label):
@@ -482,6 +532,7 @@ async def build_pending_followup(
                 {
                     "ss58": ss58,
                     "label": label,
+                    "name": name,
                     "command": build_replay_command(
                         app_ctx,
                         target=target,
@@ -512,21 +563,37 @@ async def build_pending_followup(
         "multisig_address": ms.address,
         "multisig_preset": preset,
         "depositor": pending.get("depositor"),
-        "depositor_label": labels.get(str(pending.get("depositor")), pending.get("depositor")),
+        "depositor_label": (
+            format_signatory_display(
+                str(pending.get("depositor")),
+                labels.get(str(pending.get("depositor"))),
+            )
+            if pending.get("depositor")
+            else None
+        ),
         "approvals_so_far": approvals,
-        "approval_labels": [labels.get(a, a) for a in approvals],
+        "approval_labels": [
+            format_signatory_display(a, labels.get(a)) for a in approvals
+        ],
         "remaining_signatories": remaining,
-        "remaining_labels": [labels.get(a, a) for a in remaining],
+        "remaining_labels": [
+            format_signatory_display(a, labels.get(a)) for a in remaining
+        ],
         "co_signer_commands": co_signer_commands,
         "commands_available": bool(co_signer_commands),
-        "decode_hint": (
+        # Rustc-style split: `note:` states the situation, `hint:` the fix.
+        "decode_note": (
             None
             if co_signer_commands
             else (
-                "Call details unknown. The opening block may be pruned on this RPC node, "
-                "the op may have used approve_as_multi (hash only), or local cache may be missing. "
-                "Pass --call-data 0x.. once, or re-open the op with a current SDK build."
+                "call details unknown — the opening block may be pruned on this RPC node, "
+                "the op may have used approve_as_multi (hash only), or local cache may be missing"
             )
+        ),
+        "decode_hint": (
+            None
+            if co_signer_commands
+            else "pass `--call-data 0x..` once, or re-open the op with a current SDK build"
         ),
     }
 
@@ -614,10 +681,8 @@ async def multisig_followup_from_composed(
                 call_spec=call_spec,
                 signer_role=signer_role,
             )
-            followup["decode_hint"] = (
-                "Approval recorded on-chain but pending state is not visible yet. "
-                "Run `subtensor wallet pending` to inspect co-signer commands."
-            )
+            followup["decode_note"] = "approval recorded on-chain but pending state is not visible yet"
+            followup["decode_hint"] = "run `subtensor multisig pending` to inspect co-signer commands"
             return followup
         return {
             "status": "submitted",
@@ -627,10 +692,8 @@ async def multisig_followup_from_composed(
             "call_data": call_data,
             "multisig_address": ms.address,
             "multisig_preset": preset,
-            "decode_hint": (
-                "Approval submitted but pending state is not visible yet. "
-                "Run `subtensor wallet pending` shortly to inspect co-signer commands."
-            ),
+            "decode_note": "approval submitted but pending state is not visible yet",
+            "decode_hint": "run `subtensor multisig pending` shortly to inspect co-signer commands",
         }
 
     when = pending.get("when") or {}

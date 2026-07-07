@@ -38,13 +38,20 @@ def build(op: str, args: dict[str, Any]) -> Intent:
 
 
 def list_tools() -> list[dict[str, Any]]:
-    """Machine-readable catalog of every operation, for agent/tool discovery."""
+    """Machine-readable catalog of every operation, for agent/tool discovery.
+
+    ``summary`` is the docstring's first line (for listings); ``description``
+    is the full docstring, which carries the implications an agent needs
+    (deposits, irreversibility, signer, when to use).
+    """
     tools = []
     for op, cls in sorted(REGISTRY.items()):
+        description = cls.describe()
         tools.append(
             {
                 "name": op,
-                "description": (cls.__doc__ or "").strip().split("\n")[0],
+                "summary": description.split("\n")[0],
+                "description": description,
                 "signer": cls.signer,
                 "input_schema": cls.json_schema(),
             }

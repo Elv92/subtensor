@@ -29,10 +29,12 @@ Requires Python 3.10–3.13. Using [uv](https://docs.astral.sh/uv/):
 
 ```bash
 uv venv && source .venv/bin/activate
-uv pip install -e .
+uv pip install -e '.[cli]'
 ```
 
-This installs the `subtensor` command and the `subtensor` Python package.
+This installs the `subtensor` command and the `subtensor` Python package. The
+`[cli]` extra carries the terminal-UI dependencies (typer, rich); install
+plain `-e .` for the library alone.
 
 ## CLI
 
@@ -101,7 +103,7 @@ subtensor wallet verify --message "hello" --signature 0x... --ss58 5F...
 ### Reading state
 
 ```bash
-subtensor balance show 5F...coldkey
+subtensor wallet balance 5F...coldkey
 subtensor subnets list
 subtensor subnets show 1
 subtensor stake show --hotkey 5F...validator --netuid 1
@@ -128,7 +130,7 @@ subtensor tx transfer --dest 5F...dest --amount-tao 1.5 -w my_coldkey --yes
 
 ### Address arguments accept local names
 
-Any address option (`--dest`, `--hotkey`, `--coldkey`, and the `balance show` address) takes three forms:
+Any address option (`--dest`, `--hotkey`, `--coldkey`, and the `wallet balance` address) takes three forms:
 
 - a raw ss58 address;
 - a **local key name** — hotkey options take `HOTKEY` or `WALLET/HOTKEY`; coldkey
@@ -138,7 +140,7 @@ Any address option (`--dest`, `--hotkey`, `--coldkey`, and the `balance show` ad
 
 ```bash
 subtensor query hotkey-owner --hotkey my_coldkey/my_hotkey
-subtensor balance show my_coldkey      # resolves the wallet's coldkey
+subtensor wallet balance my_coldkey    # resolves the wallet's coldkey
 ```
 
 ## SDK
@@ -215,13 +217,22 @@ async with sub.Client("finney", policy=policy) as client:
 ### Typed money
 
 `Balance` is unit-tagged (TAO vs. a subnet's alpha) and refuses to mix units, so
-you can't accidentally pass alpha where TAO is expected. Use strings/`Decimal`
+you can't accidentally pass alpha where TAO is expected. Construction and
+readback are unit-named: `from_tao` / `.tao` for TAO, `from_alpha` / `.alpha`
+for a subnet's alpha (`.tao` on an alpha balance raises). Use strings/`Decimal`
 for exact large amounts.
 
 ```python
-sub.Balance.from_tao("10000000.123456789")   # exact
-sub.tao(1.5); sub.rao(1_500_000_000)
+sub.Balance.from_tao("10000000.123456789")   # exact TAO
+sub.Balance.from_alpha(2.5, netuid=42)       # subnet-42 alpha, prints with the
+                                             # subnet's on-chain token symbol
+                                             # (α₄₂ before a client connects)
+sub.tao(1.5); sub.alpha(2.5, 42); sub.rao(1_500_000_000)
 ```
+
+Alpha is never summed across subnets or silently treated as TAO. To value stake
+in TAO, use the `stake_value_for_coldkey` read — a spot-price mark
+(`alpha × price`, excludes slippage/fees), pinned to one block.
 
 ### Typed errors
 

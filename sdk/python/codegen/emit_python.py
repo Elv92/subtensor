@@ -26,6 +26,17 @@ Spec version: {spec_version}
 """
 '''
 
+# Header variant with a one-line description folded into the module docstring,
+# so descriptor files stay a single docstring followed by imports (E402-clean).
+_HEADER_WITH_DOC = '''"""Generated from runtime metadata by codegen. DO NOT EDIT BY HAND.
+
+Regenerate with: python -m codegen <ws-endpoint>
+Spec version: {spec_version}
+
+{doc}
+"""
+'''
+
 
 def _py_name(name: str) -> str:
     """Make a chain identifier a safe Python identifier."""
@@ -53,16 +64,14 @@ def emit_errors(ir: MetadataIR) -> str:
 
 def emit_calls(ir: MetadataIR) -> str:
     lines = [_HEADER.format(spec_version=ir.spec_version)]
-    lines.append("from typing import Any\n\n\n")
-    lines.append("class Call(tuple):\n")
+    lines.append("from typing import Any, NamedTuple\n\n\n")
+    lines.append("class Call(NamedTuple):\n")
     lines.append('    """A composed call target: (module, function, params).\n\n')
-    lines.append("    A plain 3-tuple subclass so it is trivially inspectable and testable.\n")
+    lines.append("    A typed 3-tuple, so calls are trivially inspectable and testable.\n")
     lines.append('    """\n\n')
-    lines.append("    def __new__(cls, module: str, function: str, params: dict[str, Any]):\n")
-    lines.append("        return super().__new__(cls, (module, function, params))\n\n")
-    lines.append("    module = property(lambda self: self[0])\n")
-    lines.append("    function = property(lambda self: self[1])\n")
-    lines.append("    params = property(lambda self: self[2])\n\n\n")
+    lines.append("    module: str\n")
+    lines.append("    function: str\n")
+    lines.append("    params: dict[str, Any]\n\n\n")
 
     for pallet in sorted(ir.pallets, key=lambda p: p.index):
         if not pallet.calls:
@@ -91,12 +100,12 @@ def _emit_item_classes(
     groups: list[tuple[str, list[str]]],
 ) -> str:
     """Shared emitter for descriptor files: per-group classes of (container, name) tuples."""
-    lines = [_HEADER.format(spec_version=ir.spec_version)]
-    lines.append(f'"""{header_doc}"""\n\n\n' if header_doc else "\n")
-    lines.append(f"class {item_class}(tuple):\n")
+    lines = [_HEADER_WITH_DOC.format(spec_version=ir.spec_version, doc=header_doc)]
+    lines.append("from typing import NamedTuple\n\n\n")
+    lines.append(f"class {item_class}(NamedTuple):\n")
     lines.append('    """A (container, name) pair; unpack into query/constant calls."""\n\n')
-    lines.append("    def __new__(cls, container: str, name: str):\n")
-    lines.append("        return super().__new__(cls, (container, name))\n\n\n")
+    lines.append("    container: str\n")
+    lines.append("    name: str\n\n\n")
     for group_name, names in groups:
         if not names:
             continue

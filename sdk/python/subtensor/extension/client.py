@@ -8,7 +8,6 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Optional
 
-import websockets
 from websockets.asyncio.client import connect as ws_connect
 
 

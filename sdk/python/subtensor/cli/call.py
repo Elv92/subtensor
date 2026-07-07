@@ -17,7 +17,7 @@ When finney's sudo key is a multisig, save contacts once::
 
     subtensor addresses triumph-a 5OtherA...
     subtensor addresses triumph-b 5OtherB...
-    subtensor config add-multisig --name finney-sudo --threshold 2 \\
+    subtensor multisig add finney-sudo --threshold 2 \\
       --signatories suro,triumph-a,triumph-b
 
 Then each signatory approves with the short form::
@@ -45,7 +45,7 @@ import typer
 
 from .. import calls
 from .context import ctx_of
-from .globals import with_globals
+from .globals import with_tx_globals
 from . import multisig_helpers as ms_helpers
 
 _MAX_SHOWN = 80  # truncate long param values (e.g. a wasm blob) in dry-run output
@@ -112,7 +112,7 @@ def _resolve_multisig(app_ctx, **kwargs):
         raise typer.BadParameter(str(error), param_hint="--multisig")
 
 
-@with_globals
+@with_tx_globals
 def call(
     ctx: typer.Context,
     target: str = typer.Argument(
@@ -151,7 +151,15 @@ def call(
         "coldkey", "--signer", help="Which wallet key signs: 'coldkey' or 'hotkey'."
     ),
 ):
-    """Submit any raw chain call (escape hatch; use `tx` for wrapped intents)."""
+    """Submit any raw chain call (escape hatch; use `tx` for wrapped intents).
+
+    Reaches every Pallet.function the chain exposes, including ones no intent
+    wraps; the call can be wrapped in Sudo.sudo or dispatched through a
+    multisig. Prefer `tx` for day-to-day operations: intents preview effects
+    and validate arguments, while `call` submits exactly what you pass.
+
+    Example: subtensor call System.set_code --args-file runtime.json --sudo --yes
+    """
     app_ctx = ctx_of(ctx)
     if signer not in ("coldkey", "hotkey"):
         raise typer.BadParameter("must be 'coldkey' or 'hotkey'", param_hint="--signer")

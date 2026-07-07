@@ -8,7 +8,8 @@ wraps the call in ``Proxy.proxy`` so it dispatches with the coldkey's origin.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Optional
 
 from .._generated import calls
@@ -38,6 +39,11 @@ PROXY_TYPES = (
 )
 
 
+# CLI-facing choice type: Typer/Click render the variants in --help and shell
+# completion. str-mixed so members compare and format as the plain variant name.
+ProxyTypeChoice = Enum("ProxyTypeChoice", [(name, name) for name in PROXY_TYPES], type=str)
+
+
 def check_proxy_type(proxy_type: str) -> str:
     if proxy_type not in PROXY_TYPES:
         raise ValueError(
@@ -46,23 +52,39 @@ def check_proxy_type(proxy_type: str) -> str:
     return proxy_type
 
 
+PROXY_TYPE_HELP = (
+    "Scope of calls the delegation covers. One of: "
+    + ", ".join(PROXY_TYPES)
+    + ". Prefer the narrowest type that covers your use; Any can do everything "
+    "the account can, including transfers."
+)
+
+DELAY_HELP = (
+    "Announcement delay in blocks: the delegate must announce each call and wait "
+    "this long before executing it, giving you time to veto. 0 executes immediately."
+)
+
+
 @register
 @dataclass
 class AddProxy(Intent):
     """Authorize a delegate key to sign calls on this account's behalf.
 
-    ``proxy_type`` bounds what the delegate may do (e.g. ``Staking``); prefer the
-    narrowest type that covers your use. ``delay`` (in blocks) forces the delegate
-    to announce each call that long in advance — 0 means immediate.
+    The foundation of the keep-the-coldkey-offline setup: sign this once from
+    the coldkey, then let the delegate submit day-to-day calls with
+    ``proxy_for=<this account>``. The chain reserves a small deposit from the
+    signer per delegation (returned on removal). The delegate can act within
+    ``proxy_type`` immediately (or after announcing, if ``delay`` > 0) — grant
+    only to keys you control or fully trust.
     """
 
     op = "add_proxy"
     signer = "coldkey"
     wraps = (("Proxy", "add_proxy"),)
 
-    delegate_ss58: str
-    proxy_type: str = "Staking"
-    delay: int = 0
+    delegate_ss58: str = field(metadata={"help": "Key that will be allowed to sign for this account."})
+    proxy_type: str = field(default="Staking", metadata={"help": PROXY_TYPE_HELP})
+    delay: int = field(default=0, metadata={"help": DELAY_HELP})
 
     def __post_init__(self):
         check_proxy_type(self.proxy_type)
@@ -90,15 +112,27 @@ class AddProxy(Intent):
 @register
 @dataclass
 class RemoveProxy(Intent):
-    """Revoke one proxy delegation (must match type and delay exactly)."""
+    """Revoke one proxy delegation.
+
+    The (delegate, proxy_type, delay) triple must match the original
+    ``add_proxy`` exactly — a mismatch fails with NotFound rather than removing
+    a different delegation. The proxy deposit reserved at add time is returned
+    to the signer. Check current delegations with ``subtensor query proxies``.
+    """
 
     op = "remove_proxy"
     signer = "coldkey"
     wraps = (("Proxy", "remove_proxy"),)
 
-    delegate_ss58: str
-    proxy_type: str = "Staking"
-    delay: int = 0
+    delegate_ss58: str = field(metadata={"help": "Delegate whose authorization to revoke."})
+    proxy_type: str = field(
+        default="Staking",
+        metadata={"help": "Type the delegation was granted with (must match exactly)."},
+    )
+    delay: int = field(
+        default=0,
+        metadata={"help": "Delay the delegation was granted with (must match exactly)."},
+    )
 
     def __post_init__(self):
         check_proxy_type(self.proxy_type)
@@ -117,7 +151,13 @@ class RemoveProxy(Intent):
 @register
 @dataclass
 class RemoveProxies(Intent):
-    """Revoke every proxy delegation for the signing account."""
+    """Revoke every proxy delegation for the signing account at once.
+
+    A cleanup/panic switch: all delegates lose access in one call and all proxy
+    deposits are returned. Careful if this account spawned pure proxies — they
+    are controlled *through* delegations, so removing everything can strand them
+    permanently (there is no key to recover a pure proxy with).
+    """
 
     op = "remove_proxies"
     signer = "coldkey"
@@ -136,15 +176,30 @@ class RemoveProxies(Intent):
 @register
 @dataclass
 class CreatePureProxy(Intent):
-    """Create a pure proxy account (anonymous proxy derived from spawner + index)."""
+    """Create a pure proxy: a fresh keyless account controlled via delegation.
+
+    The chain derives a new address from the signer, ``proxy_type``, ``index``,
+    and the creation block. Nobody holds its private key — the spawner controls
+    it purely through the proxy relationship, which makes it useful as a
+    disposable or role-scoped account (e.g. a Staking-only treasury). Record the
+    creation block and extrinsic index (shown in the result): ``kill_pure_proxy``
+    needs them to close the account later. Losing the spawner key means losing
+    the pure proxy and anything it holds.
+    """
 
     op = "create_pure_proxy"
     signer = "coldkey"
     wraps = (("Proxy", "create_pure"),)
 
-    proxy_type: str = "Staking"
-    delay: int = 0
-    index: int = 0
+    proxy_type: str = field(default="Staking", metadata={"help": PROXY_TYPE_HELP})
+    delay: int = field(default=0, metadata={"help": DELAY_HELP})
+    index: int = field(
+        default=0,
+        metadata={
+            "help": "Disambiguator so one signer can create several pure proxies in "
+            "one block; also part of the derived address. Keep 0 unless batching."
+        },
+    )
 
     def __post_init__(self):
         check_proxy_type(self.proxy_type)
@@ -163,17 +218,34 @@ class CreatePureProxy(Intent):
 @register
 @dataclass
 class KillPureProxy(Intent):
-    """Close a pure proxy account and return its reserved deposit."""
+    """Close a pure proxy account and return its reserved deposit.
+
+    Must be signed *by the pure proxy itself* (i.e. dispatched through it with
+    ``proxy_for=<pure proxy>``), and the parameters must reproduce the exact
+    creation: spawner, type, index, plus the block height and extrinsic index
+    of the ``create_pure_proxy`` call. Irreversible — any funds left in the
+    account become permanently inaccessible, so empty it first.
+    """
 
     op = "kill_pure_proxy"
     signer = "coldkey"
     wraps = (("Proxy", "kill_pure"),)
 
-    spawner_ss58: str
-    proxy_type: str = "Staking"
-    index: int = 0
-    height: int = 0
-    ext_index: int = 0
+    spawner_ss58: str = field(metadata={"help": "Account that originally created the pure proxy."})
+    proxy_type: str = field(
+        default="Staking",
+        metadata={"help": "Type the pure proxy was created with (must match exactly)."},
+    )
+    index: int = field(
+        default=0, metadata={"help": "Index the pure proxy was created with (must match exactly)."}
+    )
+    height: int = field(
+        default=0, metadata={"help": "Block number of the creating create_pure_proxy call."}
+    )
+    ext_index: int = field(
+        default=0,
+        metadata={"help": "Extrinsic index of the creating call within that block."},
+    )
 
     def __post_init__(self):
         check_proxy_type(self.proxy_type)
@@ -196,17 +268,39 @@ class KillPureProxy(Intent):
 @register
 @dataclass
 class ExecuteProxyAnnounced(Intent):
-    """Execute a previously announced proxy call."""
+    """Execute a proxy call that was announced and has passed its delay.
+
+    The delayed-proxy flow: a delegate added with ``delay`` > 0 first announces
+    the call's hash, waits out the delay (during which the real account can
+    veto), then anyone may dispatch the announced call with this intent. The
+    inner call is given as an intent op name plus its arguments and must hash
+    to exactly what was announced. Fails if the delay has not elapsed or no
+    matching announcement exists.
+    """
 
     op = "execute_proxy_announced"
     signer = "coldkey"
     wraps = (("Proxy", "proxy_announced"),)
 
-    delegate_ss58: str
-    real_ss58: str
-    inner_op: str
-    inner_args: dict
-    force_proxy_type: Optional[str] = None
+    delegate_ss58: str = field(metadata={"help": "Delegate that made the announcement."})
+    real_ss58: str = field(
+        metadata={"help": "Account the call executes as (the delegation's grantor)."}
+    )
+    inner_op: str = field(
+        metadata={
+            "help": "Intent op name of the announced call (see subtensor tools for the catalog)."
+        }
+    )
+    inner_args: dict = field(
+        metadata={"help": "Arguments of the announced call, as a JSON object."}
+    )
+    force_proxy_type: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Require the delegation to be exactly this proxy type instead of "
+            "accepting any type that covers the call."
+        },
+    )
 
     async def build(self, substrate, wallet: Any):
         inner = await build_intent(self.inner_op, self.inner_args).build(substrate, wallet)
