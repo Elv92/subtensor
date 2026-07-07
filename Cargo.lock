@@ -398,7 +398,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -409,7 +409,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1568,7 +1568,7 @@ dependencies = [
  "bitflags 2.13.0",
  "cexpr",
  "clang-sys",
- "itertools 0.11.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "regex",
@@ -4472,7 +4472,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4711,7 +4711,7 @@ dependencies = [
 [[package]]
 name = "fc-api"
 version = "1.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "async-trait",
  "fp-storage",
@@ -4723,7 +4723,7 @@ dependencies = [
 [[package]]
 name = "fc-aura"
 version = "1.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "fc-rpc",
  "fp-storage",
@@ -4739,7 +4739,7 @@ dependencies = [
 [[package]]
 name = "fc-babe"
 version = "1.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "fc-rpc",
  "sc-client-api",
@@ -4755,7 +4755,7 @@ dependencies = [
 [[package]]
 name = "fc-consensus"
 version = "2.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "async-trait",
  "fp-consensus",
@@ -4771,7 +4771,7 @@ dependencies = [
 [[package]]
 name = "fc-db"
 version = "2.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "async-trait",
  "ethereum",
@@ -4801,7 +4801,7 @@ dependencies = [
 [[package]]
 name = "fc-mapping-sync"
 version = "2.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "fc-db",
  "fc-storage",
@@ -4824,7 +4824,7 @@ dependencies = [
 [[package]]
 name = "fc-rpc"
 version = "2.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "ethereum",
  "ethereum-types",
@@ -4875,7 +4875,7 @@ dependencies = [
 [[package]]
 name = "fc-rpc-core"
 version = "1.1.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "ethereum",
  "ethereum-types",
@@ -4891,7 +4891,7 @@ dependencies = [
 [[package]]
 name = "fc-storage"
 version = "1.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "ethereum",
  "ethereum-types",
@@ -5071,7 +5071,7 @@ dependencies = [
 [[package]]
 name = "fp-account"
 version = "1.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "hex",
  "impl-serde",
@@ -5089,7 +5089,7 @@ dependencies = [
 [[package]]
 name = "fp-consensus"
 version = "2.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "ethereum",
  "parity-scale-codec",
@@ -5100,7 +5100,7 @@ dependencies = [
 [[package]]
 name = "fp-ethereum"
 version = "1.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "ethereum",
  "ethereum-types",
@@ -5112,7 +5112,7 @@ dependencies = [
 [[package]]
 name = "fp-evm"
 version = "3.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "environmental",
  "evm",
@@ -5128,7 +5128,7 @@ dependencies = [
 [[package]]
 name = "fp-rpc"
 version = "3.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "ethereum",
  "ethereum-types",
@@ -5144,7 +5144,7 @@ dependencies = [
 [[package]]
 name = "fp-self-contained"
 version = "1.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "frame-support",
  "parity-scale-codec",
@@ -5156,7 +5156,7 @@ dependencies = [
 [[package]]
 name = "fp-storage"
 version = "2.0.0"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "parity-scale-codec",
  "serde",
@@ -6079,6 +6079,8 @@ version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
+ "allocator-api2",
+ "equivalent",
  "foldhash 0.2.0",
 ]
 
@@ -6790,7 +6792,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6799,7 +6801,7 @@ version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "82cb6a9f675da968c63b6208c641b9dca58fc0133ae53375736b1767b0cab8bd"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7299,7 +7301,7 @@ checksum = "83dc280ed78264020f986b2539e6a44e0720f98f66c99a48a2f52e4a441e99d8"
 dependencies = [
  "endian-cast",
  "generic-array 1.4.3",
- "hashbrown 0.13.2",
+ "hashbrown 0.17.1",
  "lencode-macros",
  "newt-hype",
  "ruint",
@@ -9563,7 +9565,7 @@ dependencies = [
 [[package]]
 name = "pallet-base-fee"
 version = "1.0.0"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "fp-evm",
  "frame-support",
@@ -10183,7 +10185,7 @@ dependencies = [
 [[package]]
 name = "pallet-ethereum"
 version = "4.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "ethereum",
  "ethereum-types",
@@ -10206,7 +10208,7 @@ dependencies = [
 [[package]]
 name = "pallet-evm"
 version = "6.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "cumulus-primitives-storage-weight-reclaim",
  "environmental",
@@ -10231,7 +10233,7 @@ dependencies = [
 [[package]]
 name = "pallet-evm-chain-id"
 version = "1.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "frame-support",
  "frame-system",
@@ -10242,7 +10244,7 @@ dependencies = [
 [[package]]
 name = "pallet-evm-precompile-bn128"
 version = "2.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "fp-evm",
  "sp-core",
@@ -10252,7 +10254,7 @@ dependencies = [
 [[package]]
 name = "pallet-evm-precompile-dispatch"
 version = "2.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "fp-evm",
  "frame-support",
@@ -10264,7 +10266,7 @@ dependencies = [
 [[package]]
 name = "pallet-evm-precompile-modexp"
 version = "2.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "fp-evm",
  "num",
@@ -10273,7 +10275,7 @@ dependencies = [
 [[package]]
 name = "pallet-evm-precompile-sha3fips"
 version = "2.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "fp-evm",
  "frame-support",
@@ -10284,7 +10286,7 @@ dependencies = [
 [[package]]
 name = "pallet-evm-precompile-simple"
 version = "2.0.0-dev"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "fp-evm",
  "ripemd",
@@ -10352,7 +10354,7 @@ dependencies = [
 [[package]]
 name = "pallet-hotfix-sufficients"
 version = "1.0.0"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "frame-benchmarking",
  "frame-support",
@@ -12124,16 +12126,6 @@ dependencies = [
 
 [[package]]
 name = "petgraph"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3672b37090dbd86368a4145bc067582552b29c27377cad4e0a306c97f9bd7772"
-dependencies = [
- "fixedbitset 0.5.7",
- "indexmap",
-]
-
-[[package]]
-name = "petgraph"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8701b58ea97060d5e5b155d383a69952a60943f0e6dfe30b04c287beb0b27455"
@@ -13820,7 +13812,7 @@ dependencies = [
 [[package]]
 name = "precompile-utils"
 version = "0.1.0"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "derive_more 1.0.0",
  "environmental",
@@ -13849,7 +13841,7 @@ dependencies = [
 [[package]]
 name = "precompile-utils-macro"
 version = "0.1.0"
-source = "git+https://github.com/RaoFoundation/frontier.git?rev=5b63d4a0a7529e39c420690185c6e4b89fb7ed06#5b63d4a0a7529e39c420690185c6e4b89fb7ed06"
+source = "git+https://github.com/RaoFoundation/frontier.git?rev=93d0b345fdb4bf1342d61b002369f6b0be8ebf46#93d0b345fdb4bf1342d61b002369f6b0be8ebf46"
 dependencies = [
  "case",
  "num_enum",
@@ -14133,12 +14125,12 @@ version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "itertools 0.14.0",
  "log",
  "multimap",
  "once_cell",
- "petgraph 0.7.1",
+ "petgraph 0.6.5",
  "prettyplease",
  "prost 0.13.5",
  "prost-types 0.13.5",
@@ -14153,7 +14145,7 @@ version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "itertools 0.14.0",
  "log",
  "multimap",
@@ -14363,7 +14355,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.4",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -15307,7 +15299,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -17764,7 +17756,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -19669,7 +19661,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -19688,7 +19680,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix 1.1.4",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -21320,7 +21312,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
