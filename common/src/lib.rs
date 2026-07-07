@@ -49,7 +49,7 @@ pub type Nonce = u32;
 pub const SMALL_TRANSFER_LIMIT: Balance = TaoBalance::new(500_000_000); // 0.5 TAO
 pub const SMALL_ALPHA_TRANSFER_LIMIT: AlphaBalance = AlphaBalance::new(500_000_000); // 0.5 Alpha
 
-#[freeze_struct("c972489bff40ae48")]
+#[freeze_struct("a1b5357336015a34")]
 #[repr(transparent)]
 #[derive(
     Deserialize,
@@ -66,7 +66,7 @@ pub const SMALL_ALPHA_TRANSFER_LIMIT: AlphaBalance = AlphaBalance::new(500_000_0
     Ord,
     PartialEq,
     PartialOrd,
-    RuntimeDebug,
+    Debug,
 )]
 #[serde(transparent)]
 pub struct NetUid(u16);
@@ -194,7 +194,7 @@ pub mod time {
     pub const DAYS: BlockNumber = HOURS * 24;
 }
 
-#[freeze_struct("7e5202d7f18b39d4")]
+#[freeze_struct("38c40923b0eb042a")]
 #[repr(transparent)]
 #[derive(
     Deserialize,
@@ -211,7 +211,7 @@ pub mod time {
     Ord,
     PartialEq,
     PartialOrd,
-    RuntimeDebug,
+    Debug,
 )]
 #[serde(transparent)]
 pub struct MechId(u8);
@@ -275,7 +275,7 @@ impl TypeInfo for MechId {
     }
 }
 
-#[freeze_struct("2d995c5478e16d4d")]
+#[freeze_struct("897b39d9d9b4e18")]
 #[repr(transparent)]
 #[derive(
     Deserialize,
@@ -292,7 +292,7 @@ impl TypeInfo for MechId {
     Ord,
     PartialEq,
     PartialOrd,
-    RuntimeDebug,
+    Debug,
 )]
 #[serde(transparent)]
 pub struct NetUidStorageIndex(u16);

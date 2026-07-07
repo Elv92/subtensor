@@ -28,7 +28,7 @@ use sp_arithmetic::traits::{
 #[cfg(feature = "std")]
 use sp_rpc::number::NumberOrHex;
 
-#[freeze_struct("3ad2c79c0e81406d")]
+#[freeze_struct("ab505f1cecd9568a")]
 #[repr(transparent)]
 #[derive(
     Deserialize,
@@ -45,11 +45,11 @@ use sp_rpc::number::NumberOrHex;
     Ord,
     PartialEq,
     PartialOrd,
-    RuntimeDebug,
+    Debug,
 )]
 pub struct AlphaBalance(u64);
 
-#[freeze_struct("5f0d6c02f3ac2c1")]
+#[freeze_struct("59859afd1d1d3d9d")]
 #[repr(transparent)]
 #[derive(
     Deserialize,
@@ -66,7 +66,7 @@ pub struct AlphaBalance(u64);
     Ord,
     PartialEq,
     PartialOrd,
-    RuntimeDebug,
+    Debug,
 )]
 pub struct TaoBalance(u64);
 
