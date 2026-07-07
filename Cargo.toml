@@ -7,7 +7,7 @@ homepage = "https://substrate.io/"
 edition = "2024"
 license = "Unlicense"
 publish = false
-repository = "https://github.com/opentensor/subtensor"
+repository = "https://github.com/RaoFoundation/subtensor"
 
 [build-dependencies]
 subtensor-linting = { path = "support/linting", version = "0.1.0" }
@@ -320,6 +320,6 @@ default = []
 pow-faucet = []
 
 [patch.crates-io]
-w3f-bls = { git = "https://github.com/opentensor/bls", branch = "fix-no-std" }
+w3f-bls = { git = "https://github.com/RaoFoundation/bls", branch = "fix-no-std" }
 zstd-sys = { git = "https://github.com/gztensor/zstd-sys" }
 zstd-safe = { git = "https://github.com/gztensor/zstd-safe", rev = "42cc34ef6abe5d35d982f6afefb5d7e4e69f5f18" }
