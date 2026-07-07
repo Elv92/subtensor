@@ -54,7 +54,7 @@ if [ "$OS" = "Linux" ]; then
         $SUDO apt-get update
         $SUDO apt-get install -y ca-certificates
         $SUDO apt-get install -y --no-install-recommends \
-            curl build-essential protobuf-compiler clang git pkg-config libssl-dev llvm libudev-dev \
+            curl build-essential protobuf-compiler clang libclang-dev llvm llvm-dev git pkg-config libssl-dev libudev-dev \
             gcc-aarch64-linux-gnu gcc-x86-64-linux-gnu
     fi
 
@@ -88,14 +88,14 @@ curl https://sh.rustup.rs -sSf | sh -s -- -y
 # Activate rust in shell
 source "$HOME/.cargo/env" || export PATH="$HOME/.cargo/bin:$PATH"
 
-rustup toolchain install 1.88.0 --profile minimal
-rustup default 1.88.0
+rustup toolchain install 1.93.0 --profile minimal
+rustup default 1.93.0
 
 # Add Rust Targets
 
 echo "Adding Rust targets for wasm + cross-arch binaries..."
-rustup target add wasm32v1-none
-rustup target add aarch64-unknown-linux-gnu
-rustup target add x86_64-unknown-linux-gnu
+rustup target add wasm32v1-none --toolchain 1.93.0
+rustup target add aarch64-unknown-linux-gnu --toolchain 1.93.0
+rustup target add x86_64-unknown-linux-gnu --toolchain 1.93.0
 
 echo "[✓] Environment setup complete."

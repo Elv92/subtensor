@@ -24,7 +24,7 @@ Use a terminal shell to execute the following commands:
 ```bash
 sudo apt update
 # May prompt for location information
-sudo apt install -y git clang curl libssl-dev llvm libudev-dev make pkg-config protobuf-compiler
+sudo apt install -y git clang libclang-dev curl libssl-dev llvm llvm-dev libudev-dev make pkg-config protobuf-compiler
 ```
 
 ### Arch Linux
@@ -32,7 +32,7 @@ sudo apt install -y git clang curl libssl-dev llvm libudev-dev make pkg-config p
 Run these commands from a terminal:
 
 ```bash
-pacman -Syu --needed --noconfirm curl git clang
+pacman -Syu --needed --noconfirm curl git clang llvm
 ```
 
 ### Fedora
@@ -41,7 +41,7 @@ Run these commands from a terminal:
 
 ```bash
 sudo dnf update
-sudo dnf install clang curl git openssl-devel
+sudo dnf install clang curl git openssl-devel llvm-devel
 ```
 
 ### OpenSUSE
@@ -101,12 +101,12 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
 ```
 
-Configure the Rust toolchain to default to the latest stable version:
+Configure the Rust toolchain to the version pinned by this repository:
 
 ```bash
-rustup default stable
-rustup update
-rustup target add wasm32v1-none
+rustup toolchain install 1.93.0 --profile minimal
+rustup default 1.93.0
+rustup target add wasm32v1-none --toolchain 1.93.0
 ```
 
 ## Test your set-up
