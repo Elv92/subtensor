@@ -29,7 +29,8 @@ use crate::PrecompileExt;
 
 pub(crate) type AccountId = AccountId32;
 pub(crate) type Block = frame_system::mocking::MockBlock<Runtime>;
-pub(crate) type UncheckedExtrinsic = TestXt<RuntimeCall, ()>;
+type TxExtension = frame_system::AuthorizeCall<Runtime>;
+pub(crate) type UncheckedExtrinsic = TestXt<RuntimeCall, TxExtension>;
 
 frame_support::construct_runtime!(
     pub enum Runtime {
@@ -387,6 +388,26 @@ where
 {
     type Extrinsic = UncheckedExtrinsic;
     type RuntimeCall = RuntimeCall;
+}
+
+impl<LocalCall> frame_system::offchain::CreateTransaction<LocalCall> for Runtime
+where
+    RuntimeCall: From<LocalCall>,
+{
+    type Extension = TxExtension;
+
+    fn create_transaction(call: RuntimeCall, extension: Self::Extension) -> Self::Extrinsic {
+        UncheckedExtrinsic::new_transaction(call, extension)
+    }
+}
+
+impl<LocalCall> frame_system::offchain::CreateAuthorizedTransaction<LocalCall> for Runtime
+where
+    RuntimeCall: From<LocalCall>,
+{
+    fn create_extension() -> Self::Extension {
+        TxExtension::new()
+    }
 }
 
 impl<LocalCall> frame_system::offchain::CreateBare<LocalCall> for Runtime
