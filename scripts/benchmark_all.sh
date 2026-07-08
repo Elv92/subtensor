@@ -22,6 +22,9 @@ TEMPLATE="$ROOT_DIR/.maintain/frame-weight-template.hbs"
 
 STEPS="${STEPS:-50}"
 REPEAT="${REPEAT:-20}"
+# Utility batches are low-amplitude microbenchmarks; median-slopes avoids noisy intercept drift.
+UTILITY_OUTPUT_ANALYSIS="${UTILITY_OUTPUT_ANALYSIS:-median-slopes}"
+
 
 die() { echo "ERROR: $1" >&2; exit 1; }
 
@@ -62,6 +65,13 @@ for pallet in "${PALLETS[@]}"; do
   echo " Benchmarking $pallet -> $output"
   echo "════════════════════════════════════════════════════════"
 
+  analysis_args=()
+  if [[ -n "${OUTPUT_ANALYSIS:-}" ]]; then
+    analysis_args+=(--output-analysis="$OUTPUT_ANALYSIS")
+  elif [[ "$pallet" == "pallet_subtensor_utility" ]]; then
+    analysis_args+=(--output-analysis="$UTILITY_OUTPUT_ANALYSIS")
+  fi
+
   "$NODE_BIN" benchmark pallet \
     --runtime="$RUNTIME_WASM" \
     --genesis-builder=runtime \
@@ -74,6 +84,7 @@ for pallet in "${PALLETS[@]}"; do
     --no-storage-info \
     --no-min-squares \
     --no-median-slopes \
+    "${analysis_args[@]}" \
     --output="$ROOT_DIR/$output" \
     --template="$TEMPLATE"
 
