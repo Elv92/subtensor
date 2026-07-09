@@ -90,7 +90,6 @@ pub trait WeightInfo {
 	fn sudo_set_root_claim_threshold() -> Weight;
 	fn set_auto_parent_delegation_enabled() -> Weight;
 	fn add_stake_burn() -> Weight;
-	fn dissolve_network() -> Weight;
 	fn set_pending_childkey_cooldown() -> Weight;
 	fn lock_stake() -> Weight;
 	fn move_lock() -> Weight;
@@ -2645,25 +2644,6 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		Weight::from_parts(1_034_060_000, 8727)
 			.saturating_add(T::DbWeight::get().reads(33_u64))
 			.saturating_add(T::DbWeight::get().writes(17_u64))
-	}
-	/// Storage: `SubtensorModule::NetworksAdded` (r:1 w:1)
-	/// Proof: `SubtensorModule::NetworksAdded` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	/// Storage: `SubtensorModule::DissolveCleanupQueue` (r:1 w:1)
-	/// Proof: `SubtensorModule::DissolveCleanupQueue` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `SubtensorModule::TotalNetworks` (r:1 w:1)
-	/// Proof: `SubtensorModule::TotalNetworks` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `SubtensorModule::TotalStake` (r:1 w:1)
-	/// Proof: `SubtensorModule::TotalStake` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `SubtensorModule::SubnetTAO` (r:1 w:0)
-	/// Proof: `SubtensorModule::SubnetTAO` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	fn dissolve_network() -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `842`
-		//  Estimated: `4307`
-		// Minimum execution time: 31_587_000 picoseconds.
-		Weight::from_parts(32_539_000, 4307)
-			.saturating_add(T::DbWeight::get().reads(5_u64))
-			.saturating_add(T::DbWeight::get().writes(4_u64))
 	}
 	/// Storage: `SubtensorModule::PendingChildKeyCooldown` (r:0 w:1)
 	/// Proof: `SubtensorModule::PendingChildKeyCooldown` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
@@ -6533,25 +6513,6 @@ impl WeightInfo for () {
 		Weight::from_parts(1_034_060_000, 8727)
 			.saturating_add(RocksDbWeight::get().reads(33_u64))
 			.saturating_add(RocksDbWeight::get().writes(17_u64))
-	}
-	/// Storage: `SubtensorModule::NetworksAdded` (r:1 w:1)
-	/// Proof: `SubtensorModule::NetworksAdded` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	/// Storage: `SubtensorModule::DissolveCleanupQueue` (r:1 w:1)
-	/// Proof: `SubtensorModule::DissolveCleanupQueue` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `SubtensorModule::TotalNetworks` (r:1 w:1)
-	/// Proof: `SubtensorModule::TotalNetworks` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `SubtensorModule::TotalStake` (r:1 w:1)
-	/// Proof: `SubtensorModule::TotalStake` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
-	/// Storage: `SubtensorModule::SubnetTAO` (r:1 w:0)
-	/// Proof: `SubtensorModule::SubnetTAO` (`max_values`: None, `max_size`: None, mode: `Measured`)
-	fn dissolve_network() -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `842`
-		//  Estimated: `4307`
-		// Minimum execution time: 31_587_000 picoseconds.
-		Weight::from_parts(32_539_000, 4307)
-			.saturating_add(RocksDbWeight::get().reads(5_u64))
-			.saturating_add(RocksDbWeight::get().writes(4_u64))
 	}
 	/// Storage: `SubtensorModule::PendingChildKeyCooldown` (r:0 w:1)
 	/// Proof: `SubtensorModule::PendingChildKeyCooldown` (`max_values`: Some(1), `max_size`: None, mode: `Measured`)
