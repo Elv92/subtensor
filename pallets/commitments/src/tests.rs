@@ -18,7 +18,7 @@ use frame_support::pallet_prelude::Hooks;
 use frame_support::{
     BoundedVec, assert_noop, assert_ok,
     traits::{Currency, Get, ReservableCurrency},
-    weights::constants::RocksDbWeight,
+    weights::{Weight, constants::RocksDbWeight},
 };
 use frame_system::{Pallet as System, RawOrigin};
 
