@@ -1,0 +1,157 @@
+name: sccache MMDS canary
+
+on:
+  push:
+    branches:
+      - codex/sccache-mmds-canary
+
+permissions:
+  contents: read
+
+jobs:
+  verify-reader-boundary:
+    runs-on: [self-hosted, fireactions-turbo]
+    timeout-minutes: 5
+    steps:
+      - name: Verify MMDSv2 and read-only R2 access
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import datetime
+          import hashlib
+          import hmac
+          import json
+          from urllib.error import HTTPError
+          from urllib.parse import quote, urlsplit
+          from urllib.request import Request, urlopen
+
+
+          EXPECTED_ENDPOINT = "https://3dc4cebb791314d78848969042fb3382.r2.cloudflarestorage.com"
+          EXPECTED_BUCKET = "subtensor-ci-sccache"
+          EXPECTED_PREFIX = "subtensor/v1"
+          PROBE_KEY = f"{EXPECTED_PREFIX}/verification/mmds-reader-canary.txt"
+          PROBE_BODY = b"subtensor sccache MMDS reader canary\n"
+
+
+          def mmds_metadata():
+              token_request = Request(
+                  "http://169.254.169.254/latest/api/token",
+                  method="PUT",
+                  headers={"X-Metadata-Token-TTL-Seconds": "60"},
+              )
+              with urlopen(token_request, timeout=5) as response:
+                  token = response.read().decode()
+              metadata_request = Request(
+                  "http://169.254.169.254/latest/meta-data/sccache",
+                  headers={"X-Metadata-Token": token, "Accept": "application/json"},
+              )
+              with urlopen(metadata_request, timeout=5) as response:
+                  return json.loads(response.read())
+
+
+          def signing_key(secret, date_stamp, region, service):
+              key_date = hmac.new(("AWS4" + secret).encode(), date_stamp.encode(), hashlib.sha256).digest()
+              key_region = hmac.new(key_date, region.encode(), hashlib.sha256).digest()
+              key_service = hmac.new(key_region, service.encode(), hashlib.sha256).digest()
+              return hmac.new(key_service, b"aws4_request", hashlib.sha256).digest()
+
+
+          def signed_request(method, url, access_key, secret_key, body=b""):
+              parsed = urlsplit(url)
+              now = datetime.datetime.now(datetime.timezone.utc)
+              amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+              date_stamp = now.strftime("%Y%m%d")
+              region = "auto"
+              service = "s3"
+              payload_hash = hashlib.sha256(body).hexdigest()
+              canonical_uri = quote(parsed.path or "/", safe="/-_.~")
+              canonical_query = parsed.query
+              canonical_headers = (
+                  f"host:{parsed.netloc}\n"
+                  f"x-amz-content-sha256:{payload_hash}\n"
+                  f"x-amz-date:{amz_date}\n"
+              )
+              signed_headers = "host;x-amz-content-sha256;x-amz-date"
+              canonical_request = "\n".join(
+                  [
+                      method,
+                      canonical_uri,
+                      canonical_query,
+                      canonical_headers,
+                      signed_headers,
+                      payload_hash,
+                  ]
+              )
+              algorithm = "AWS4-HMAC-SHA256"
+              scope = f"{date_stamp}/{region}/{service}/aws4_request"
+              string_to_sign = "\n".join(
+                  [algorithm, amz_date, scope, hashlib.sha256(canonical_request.encode()).hexdigest()]
+              )
+              signature = hmac.new(
+                  signing_key(secret_key, date_stamp, region, service),
+                  string_to_sign.encode(),
+                  hashlib.sha256,
+              ).hexdigest()
+              authorization = (
+                  f"{algorithm} Credential={access_key}/{scope}, "
+                  f"SignedHeaders={signed_headers}, Signature={signature}"
+              )
+              request = Request(
+                  url,
+                  data=body if method in {"PUT", "POST"} else None,
+                  method=method,
+                  headers={
+                      "Authorization": authorization,
+                      "Host": parsed.netloc,
+                      "X-Amz-Content-Sha256": payload_hash,
+                      "X-Amz-Date": amz_date,
+                  },
+              )
+              with urlopen(request, timeout=15) as response:
+                  return response.status, response.read()
+
+
+          metadata = mmds_metadata()
+          expected = {
+              "bucket": EXPECTED_BUCKET,
+              "endpoint": EXPECTED_ENDPOINT,
+              "region": "auto",
+              "s3_use_ssl": True,
+              "s3_rw_mode": "READ_ONLY",
+              "key_prefix": EXPECTED_PREFIX,
+          }
+          for key, value in expected.items():
+              if metadata.get(key) != value:
+                  raise RuntimeError(f"MMDS field {key!r} did not match the expected contract")
+
+          access_key = metadata.get("access_key_id", "")
+          secret_key = metadata.get("secret_access_key", "")
+          if not access_key or not secret_key:
+              raise RuntimeError("MMDS did not contain a complete reader credential")
+
+          probe_url = f"{EXPECTED_ENDPOINT}/{EXPECTED_BUCKET}/{PROBE_KEY}"
+          status, body = signed_request("GET", probe_url, access_key, secret_key)
+          if status != 200 or body != PROBE_BODY:
+              raise RuntimeError("R2 reader GET did not return the seeded probe")
+
+          try:
+              signed_request("PUT", probe_url + ".denied", access_key, secret_key, b"denied\n")
+          except HTTPError as error:
+              if error.code != 403:
+                  raise RuntimeError(f"R2 reader PUT failed with unexpected HTTP {error.code}") from error
+          else:
+              raise RuntimeError("R2 reader unexpectedly succeeded in writing an object")
+
+          try:
+              signed_request("DELETE", probe_url, access_key, secret_key)
+          except HTTPError as error:
+              if error.code != 403:
+                  raise RuntimeError(f"R2 reader DELETE failed with unexpected HTTP {error.code}") from error
+          else:
+              raise RuntimeError("R2 reader unexpectedly succeeded in deleting an object")
+
+          print("MMDSv2 contract: PASS")
+          print("R2 reader GET: PASS")
+          print("R2 reader PUT/DELETE denied: PASS")
+          PY
