@@ -1,7 +1,7 @@
 """Generated from runtime metadata by codegen. DO NOT EDIT BY HAND.
 
 Regenerate with: python -m codegen <ws-endpoint>
-Spec version: 440
+Spec version: 441
 
 Pallet constant descriptors: unpack into substrate.constant.
 """
@@ -107,6 +107,7 @@ class SubtensorModule:
     InitialTaoWeight = Item('SubtensorModule', 'InitialTaoWeight')
     InitialEmaPriceHalvingPeriod = Item('SubtensorModule', 'InitialEmaPriceHalvingPeriod')
     InitialStartCallDelay = Item('SubtensorModule', 'InitialStartCallDelay')
+    InitialMinTradeDelay = Item('SubtensorModule', 'InitialMinTradeDelay')
     KeySwapOnSubnetCost = Item('SubtensorModule', 'KeySwapOnSubnetCost')
     HotkeySwapOnSubnetInterval = Item('SubtensorModule', 'HotkeySwapOnSubnetInterval')
     LeaseDividendsDistributionInterval = Item('SubtensorModule', 'LeaseDividendsDistributionInterval')

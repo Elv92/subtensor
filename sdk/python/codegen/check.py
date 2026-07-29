@@ -257,6 +257,7 @@ RAW_ONLY: dict[str, set[str]] = {
         "sudo_set_sn_owner_hotkey",
         "sudo_set_stake_threshold",
         "sudo_set_start_call_delay",
+        "sudo_set_min_trade_delay",
         "sudo_set_subnet_limit",
         "sudo_set_subnet_moving_alpha",
         "sudo_set_subnet_owner_cut",

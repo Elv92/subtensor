@@ -1917,6 +1917,13 @@ pub mod pallet {
     #[pallet::storage]
     pub type StartCallDelay<T: Config> = StorageValue<_, u64, ValueQuery, T::InitialStartCallDelay>;
 
+    /// ITEM( min_trade_delay )
+    /// Blocks after subnet-start (`start_call`) during which staking in/out is blocked, so a
+    /// subnet owner cannot bundle `add_stake` into the `start_call` block and self-snipe the
+    /// launch. See opentensor/subtensor#2844.
+    #[pallet::storage]
+    pub type MinTradeDelay<T: Config> = StorageValue<_, u64, ValueQuery, T::InitialMinTradeDelay>;
+
     /// ITEM( min_network_lock_cost )
     #[pallet::storage]
     pub type NetworkMinLockCost<T> =
@@ -3050,12 +3057,32 @@ pub mod pallet {
             true
         }
 
-        /// Ensure subtoken enalbed
+        /// Ensure the subtoken is enabled AND the subnet has reached its scheduled opening block.
+        ///
+        /// `do_start_call` schedules `FirstEmissionBlockNumber` at `start_call_block + 1 +
+        /// MinTradeDelay`; emission and trading both begin there. Staking is rejected until that
+        /// block, so a subnet owner cannot bundle `add_stake` alongside `start_call` — or
+        /// pre-address one to the opening block — and take an uncontested first position
+        /// (opentensor/subtensor#2844). Subnets whose subtoken was enabled without a start block
+        /// (e.g. root / genesis paths where `FirstEmissionBlockNumber` is unset) are unaffected,
+        /// as are subnets that started before this feature shipped, whose opening block is in the
+        /// past.
         pub fn ensure_subtoken_enabled(subnet: NetUid) -> Result<(), Error<T>> {
             ensure!(
                 SubtokenEnabled::<T>::get(subnet),
                 Error::<T>::SubtokenDisabled
             );
+            if let Some(first_emission_block) = FirstEmissionBlockNumber::<T>::get(subnet) {
+                // Trading opens one block before emission, preserving the relationship `main`
+                // already has (`start_call` enables trading at block B while
+                // `FirstEmissionBlockNumber` is B+1). With `MinTradeDelay = 0` this is therefore an
+                // exact no-op, and the delay shifts both together.
+                let trading_open_block = first_emission_block.saturating_sub(1);
+                ensure!(
+                    Self::get_current_block_as_u64() >= trading_open_block,
+                    Error::<T>::TradingNotOpenYet
+                );
+            }
             Ok(())
         }
     }

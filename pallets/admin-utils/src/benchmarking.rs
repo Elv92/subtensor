@@ -861,6 +861,12 @@ mod benchmarks {
     }
 
     #[benchmark]
+    fn sudo_set_min_trade_delay() {
+        #[extrinsic_call]
+        _(RawOrigin::Root, 10u64);
+    }
+
+    #[benchmark]
     fn sudo_set_tao_flow_smoothing_factor() {
         #[extrinsic_call]
         _(RawOrigin::Root, u64::MAX);

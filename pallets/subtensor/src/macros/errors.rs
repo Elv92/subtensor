@@ -348,5 +348,7 @@ mod errors {
         ColdkeyCollateralPositionsFull,
         /// The coldkey has too many staking hotkeys for a single manual root claim.
         TooManyRootClaimHotkeys,
+        /// Trading is not open yet: the post-start trading delay (MinTradeDelay) has not elapsed.
+        TradingNotOpenYet,
     }
 }

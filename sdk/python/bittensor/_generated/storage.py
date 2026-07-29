@@ -1,7 +1,7 @@
 """Generated from runtime metadata by codegen. DO NOT EDIT BY HAND.
 
 Regenerate with: python -m codegen <ws-endpoint>
-Spec version: 440
+Spec version: 441
 
 Storage item descriptors: unpack into substrate.query/query_map. Each carries its VALUE's type identity (value_type_ident) so normalization can key on the runtime's own type names without a node round-trip.
 """
@@ -164,6 +164,7 @@ class SubtensorModule:
     TotalNetworks = Item('SubtensorModule', 'TotalNetworks', 'u16')
     NetworkImmunityPeriod = Item('SubtensorModule', 'NetworkImmunityPeriod', 'u64')
     StartCallDelay = Item('SubtensorModule', 'StartCallDelay', 'u64')
+    MinTradeDelay = Item('SubtensorModule', 'MinTradeDelay', 'u64')
     NetworkMinLockCost = Item('SubtensorModule', 'NetworkMinLockCost', 'TaoBalance')
     NetworkLastLockCost = Item('SubtensorModule', 'NetworkLastLockCost', 'TaoBalance')
     NetworkLockReductionInterval = Item('SubtensorModule', 'NetworkLockReductionInterval', 'u64')

@@ -2120,6 +2120,16 @@ pub mod pallet {
             Ok(())
         }
 
+        /// Sets the number of blocks after subnet-start during which staking is blocked (#2844).
+        #[pallet::call_index(102)]
+        #[pallet::weight(<T as pallet::Config>::WeightInfo::sudo_set_min_trade_delay())]
+        pub fn sudo_set_min_trade_delay(origin: OriginFor<T>, delay: u64) -> DispatchResult {
+            ensure_root(origin)?;
+            pallet_subtensor::Pallet::<T>::set_min_trade_delay(delay);
+            log::debug!("MinTradeDelay( delay: {delay:?} ) ");
+            Ok(())
+        }
+
         /// Sets the announcement delay for coldkey swap.
         #[pallet::call_index(86)]
         #[pallet::weight(<T as pallet::Config>::WeightInfo::sudo_set_coldkey_swap_announcement_delay())]

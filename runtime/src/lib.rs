@@ -235,7 +235,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     //   `spec_version`, and `authoring_version` are the same between Wasm and native.
     // This value is set to 100 to notify Polkadot-JS App (https://polkadot.js.org/apps) to use
     //   the compatible custom types.
-    spec_version: 440,
+    spec_version: 441,
     impl_version: 1,
     apis: RUNTIME_API_VERSIONS,
     transaction_version: 1,
@@ -849,6 +849,11 @@ parameter_types! {
     pub const InitialEmaPriceHalvingPeriod: u64 = 201_600_u64; // 4 weeks
     // 0 days
     pub const InitialStartCallDelay: u64 = 0;
+    // #2844: block staking for a predictable window after subnet-start (prod 10 blocks, ~2 min;
+    // 0 on fast-blocks). Below 3 blocks the delay achieves nothing, because both encrypted-mempool
+    // paths reach at most two blocks past `start_call`; above that it is a policy choice, and 10 is
+    // simply a round number. Sudo-tunable via `sudo_set_min_trade_delay`.
+    pub const InitialMinTradeDelay: u64 = prod_or_fast!(10, 0);
     pub const SubtensorInitialKeySwapOnSubnetCost: TaoBalance = TaoBalance::new(1_000_000); // 0.001 TAO
     pub const HotkeySwapOnSubnetInterval : BlockNumber = prod_or_fast!(24 * 60 * 60 / 12, 1); // 1 day
     pub const LeaseDividendsDistributionInterval: BlockNumber = 100; // 100 blocks
@@ -928,6 +933,7 @@ impl pallet_subtensor::Config for Runtime {
     type InitialDissolveNetworkScheduleDuration = InitialDissolveNetworkScheduleDuration;
     type InitialEmaPriceHalvingPeriod = InitialEmaPriceHalvingPeriod;
     type InitialStartCallDelay = InitialStartCallDelay;
+    type InitialMinTradeDelay = InitialMinTradeDelay;
     type SwapInterface = Swap;
     type KeySwapOnSubnetCost = SubtensorInitialKeySwapOnSubnetCost;
     type HotkeySwapOnSubnetInterval = HotkeySwapOnSubnetInterval;

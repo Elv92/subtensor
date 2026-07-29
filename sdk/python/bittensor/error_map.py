@@ -175,6 +175,8 @@ NAME_TO_CODE: dict[str, ErrorCode] = {
     "FirstEmissionBlockNumberAlreadySet": _C.ALREADY_EXISTS,
     "NeedWaitingMoreBlocksToStarCall": _C.TOO_EARLY,
     "StartCallNotReady": _C.TOO_EARLY,
+    "TradingNotOpenYet": _C.TOO_EARLY,
+    "TooManyRootClaimHotkeys": _C.LIMIT_EXCEEDED,
     "WaitingForDissolvedSubnetCleanup": _C.TOO_EARLY,
     # Lock id space is one-per-subnet-registration; overflow means the coldkey
     # holds the maximum number of registered subnets, not an arithmetic bug.

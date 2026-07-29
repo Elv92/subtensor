@@ -989,3 +989,179 @@ fn test_register_network_gives_owner_no_initial_alpha_distribution() {
         );
     });
 }
+
+/***************************
+  #2844 — post-start trading delay (MinTradeDelay)
+*****************************/
+
+// A non-zero MinTradeDelay must block staking (including an owner's same-block bundle) until
+// `start_call_block + MinTradeDelay`, then open it. This is the fix for the SN99 self-snipe.
+#[test]
+fn test_min_trade_delay_blocks_stake_until_window_elapses() {
+    new_test_ext(0).execute_with(|| {
+        let netuid = NetUid::from(1);
+        let tempo: u16 = 13;
+        let coldkey = U256::from(0); // default subnet owner
+        let hotkey = U256::from(1);
+        let delay: u64 = 10;
+
+        add_network_without_emission_block(netuid, tempo, 0);
+        mock::setup_reserves(netuid, 1_000_000_000.into(), 1_000_000_000.into());
+        register_ok_neuron(netuid, hotkey, coldkey, 0);
+        add_balance_to_coldkey_account(&coldkey, 10_000.into());
+
+        SubtensorModule::set_min_trade_delay(delay);
+        assert_eq!(MinTradeDelay::<Test>::get(), delay);
+
+        // Owner starts the subnet at block B: FirstEmissionBlockNumber = B+1, start block = B.
+        let start_block = System::block_number();
+        assert_ok!(SubtensorModule::start_call(
+            RuntimeOrigin::signed(coldkey),
+            netuid
+        ));
+        assert!(SubtokenEnabled::<Test>::get(netuid));
+
+        // Same block as start: the owner's bundled add_stake is rejected.
+        assert_noop!(
+            SubtensorModule::add_stake(
+                RuntimeOrigin::signed(coldkey),
+                hotkey,
+                netuid,
+                1_000_000.into()
+            ),
+            Error::<Test>::TradingNotOpenYet
+        );
+
+        // The gate stays closed for the whole window and opens exactly at start + delay.
+        assert!(matches!(
+            SubtensorModule::ensure_subtoken_enabled(netuid),
+            Err(Error::<Test>::TradingNotOpenYet)
+        ));
+        System::set_block_number(start_block + delay - 1);
+        assert!(matches!(
+            SubtensorModule::ensure_subtoken_enabled(netuid),
+            Err(Error::<Test>::TradingNotOpenYet)
+        ));
+        System::set_block_number(start_block + delay);
+        assert!(SubtensorModule::ensure_subtoken_enabled(netuid).is_ok());
+    });
+}
+
+// A zero MinTradeDelay preserves today's behaviour: trading is open in the start block.
+#[test]
+fn test_min_trade_delay_zero_preserves_immediate_trading() {
+    new_test_ext(0).execute_with(|| {
+        let netuid = NetUid::from(1);
+        let tempo: u16 = 13;
+        let coldkey = U256::from(0);
+
+        add_network_without_emission_block(netuid, tempo, 0);
+        mock::setup_reserves(netuid, 1_000_000_000.into(), 1_000_000_000.into());
+
+        SubtensorModule::set_min_trade_delay(0);
+        assert_ok!(SubtensorModule::start_call(
+            RuntimeOrigin::signed(coldkey),
+            netuid
+        ));
+        // delay = 0 -> trading is open in the start block, exactly as today.
+        assert!(SubtensorModule::ensure_subtoken_enabled(netuid).is_ok());
+    });
+}
+
+// #2844 — the scheduled-start fix must withhold EMISSION during the window, not just trading.
+// Without this, the coinbase keeps minting while every buyer is locked out, and the subnet owner
+// receives alpha via the owner cut at zero cost — strictly worse than the behaviour being fixed.
+#[test]
+fn test_min_trade_delay_withholds_emission_during_window() {
+    new_test_ext(0).execute_with(|| {
+        let netuid = NetUid::from(1);
+        let tempo: u16 = 13;
+        let coldkey = U256::from(0); // default subnet owner
+        let hotkey = U256::from(1);
+        let delay: u64 = 20;
+
+        add_network_without_emission_block(netuid, tempo, 0);
+        mock::setup_reserves(netuid, 1_000_000_000.into(), 1_000_000_000.into());
+        register_ok_neuron(netuid, hotkey, coldkey, 0);
+
+        SubtensorModule::set_min_trade_delay(delay);
+
+        // Not started yet: no FirstEmissionBlockNumber, so never emission-eligible.
+        assert!(!SubtensorModule::get_subnets_to_emit_to(&[netuid]).contains(&netuid));
+
+        let start_block = System::block_number();
+        assert_ok!(SubtensorModule::start_call(
+            RuntimeOrigin::signed(coldkey),
+            netuid
+        ));
+
+        // start_call schedules rather than starts: emission begins at FirstEmissionBlockNumber,
+        // which is start + 1 + delay.
+        let feb = FirstEmissionBlockNumber::<Test>::get(netuid).expect("start_call sets FEB");
+        assert_eq!(feb, start_block + 1 + delay);
+
+        // Throughout the window the subnet must be excluded from emission, even though
+        // SubtokenEnabled is already true.
+        assert!(SubtokenEnabled::<Test>::get(netuid));
+        for offset in 0..delay {
+            System::set_block_number(start_block + offset);
+            assert!(
+                !SubtensorModule::get_subnets_to_emit_to(&[netuid]).contains(&netuid),
+                "subnet drew emission during the trade-delay window at offset {offset}"
+            );
+        }
+
+        // Trading opens one block before emission, preserving main's existing relationship.
+        System::set_block_number(start_block + delay);
+        assert!(SubtensorModule::ensure_subtoken_enabled(netuid).is_ok());
+        assert!(!SubtensorModule::get_subnets_to_emit_to(&[netuid]).contains(&netuid));
+
+        // At FirstEmissionBlockNumber the subnet becomes emission-eligible.
+        System::set_block_number(feb);
+        assert!(SubtensorModule::get_subnets_to_emit_to(&[netuid]).contains(&netuid));
+    });
+}
+
+// The vulnerability itself: no alpha may reach any account before the subnet opens, even if the
+// window spans an epoch boundary. `SubnetAlphaOut` is the aggregate of alpha issued to accounts,
+// so it staying at zero is the direct assertion that nobody — the owner included — was credited.
+#[test]
+fn test_min_trade_delay_no_alpha_issued_before_open() {
+    new_test_ext(0).execute_with(|| {
+        let netuid = NetUid::from(1);
+        let tempo: u16 = 13;
+        let coldkey = U256::from(0); // default subnet owner
+        let hotkey = U256::from(1);
+        let delay: u64 = 40; // several tempos, so epoch boundaries fall inside the window
+
+        add_network_without_emission_block(netuid, tempo, 0);
+        mock::setup_reserves(netuid, 1_000_000_000.into(), 1_000_000_000.into());
+        register_ok_neuron(netuid, hotkey, coldkey, 0);
+
+        SubtensorModule::set_min_trade_delay(delay);
+
+        let start_block = System::block_number();
+        assert_ok!(SubtensorModule::start_call(
+            RuntimeOrigin::signed(coldkey),
+            netuid
+        ));
+        let feb = FirstEmissionBlockNumber::<Test>::get(netuid).expect("start_call sets FEB");
+
+        // Run the chain (epochs included) right up to the block before trading opens.
+        run_to_block(start_block + delay - 1);
+
+        // No account holds any of this subnet's alpha, and the owner cannot buy in.
+        assert_eq!(
+            u64::from(SubnetAlphaOut::<Test>::get(netuid)),
+            0,
+            "alpha was issued to accounts during the trade-delay window"
+        );
+        assert!(matches!(
+            SubtensorModule::ensure_subtoken_enabled(netuid),
+            Err(Error::<Test>::TradingNotOpenYet)
+        ));
+
+        // Sanity: the schedule is what we think it is.
+        assert_eq!(feb, start_block + 1 + delay);
+    });
+}

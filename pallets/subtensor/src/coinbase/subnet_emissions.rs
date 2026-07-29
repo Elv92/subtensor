@@ -24,7 +24,13 @@ impl<T: Config> Pallet<T> {
         subnets
             .iter()
             .filter(|netuid| !netuid.is_root())
-            .filter(|netuid| FirstEmissionBlockNumber::<T>::get(*netuid).is_some())
+            // #2844: a scheduled subnet is not live until its opening block, so it must not draw
+            // emission during the window. Without this, the coinbase would credit the owner cut at
+            // zero cost while every other buyer is still locked out.
+            .filter(|netuid| {
+                FirstEmissionBlockNumber::<T>::get(*netuid)
+                    .is_some_and(|feb| Self::get_current_block_as_u64() >= feb)
+            })
             .filter(|netuid| SubtokenEnabled::<T>::get(*netuid))
             .filter(|&netuid| Self::get_network_registration_allowed(*netuid))
             .copied()

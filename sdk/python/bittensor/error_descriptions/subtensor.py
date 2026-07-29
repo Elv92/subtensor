@@ -675,6 +675,17 @@ DESCRIPTIONS: dict[str, str] = {
         "was registered. Check readiness with `btcli sudo check-start` and wait for the "
         "remainder."
     ),
+    "TradingNotOpenYet": (
+        "The subnet has been started but has not reached its scheduled opening block. "
+        "`start_call` schedules trading to open `MinTradeDelay` blocks later, so no account — "
+        "the owner included — can take a position first. Wait until the opening block; "
+        "`FirstEmissionBlockNumber` for the subnet is the block emission begins, and trading "
+        "opens one block earlier."
+    ),
+    "TooManyRootClaimHotkeys": (
+        "The coldkey has more staking hotkeys than a single manual root claim can cover. "
+        "Split the claim across several calls."
+    ),
     "SubNetRegistrationDisabled": (
         "Neuron registration is switched off: either the subnet's `NetworkRegistrationAllowed` "
         "flag is false, or network creation has not opened yet (`NetworkRegistrationStartBlock` "

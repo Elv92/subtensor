@@ -544,7 +544,14 @@ impl<T: Config> Pallet<T> {
                 >= registration_block_number.saturating_add(StartCallDelay::<T>::get()),
             Error::<T>::StartCallNotReady
         );
-        let next_block_number = current_block_number.saturating_add(1);
+        // #2844: schedule the start rather than starting now. Emission and trading both begin at
+        // `FirstEmissionBlockNumber`, which is pushed out by `MinTradeDelay` so that no account —
+        // the owner included — can take a position before the subnet opens. Because this value is
+        // written once, here, a later change to `MinTradeDelay` cannot retroactively move the
+        // opening block of a subnet that has already started.
+        let next_block_number = current_block_number
+            .saturating_add(1)
+            .saturating_add(MinTradeDelay::<T>::get());
 
         FirstEmissionBlockNumber::<T>::insert(netuid, next_block_number);
         SubtokenEnabled::<T>::insert(netuid, true);

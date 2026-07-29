@@ -1,7 +1,7 @@
 """Generated from runtime metadata by codegen. DO NOT EDIT BY HAND.
 
 Regenerate with: python -m codegen <ws-endpoint>
-Spec version: 440
+Spec version: 441
 """
 from typing import Any, NamedTuple
 
@@ -257,7 +257,7 @@ class SubtensorModule:
 
     @staticmethod
     def claim_root(subnets: 'BTreeSet') -> Call:
-        "Claims the root emissions for a coldkey. # Arguments * `origin`: The signature of the caller's coldkey.  # Events * `RootClaimed`: On the successfully claiming the root emissions for a coldkey.  # Errors * `InvalidSubnetNumber`: The subnet set is empty or exceeds the maximum number of claims."
+        "Claims the root emissions for a coldkey. # Arguments * `origin`: The signature of the caller's coldkey.  # Events * `RootClaimed`: On the successfully claiming the root emissions for a coldkey.  # Errors * `InvalidSubnetNumber`: The subnet set is empty or exceeds the maximum number of claims. * `TooManyRootClaimHotkeys`: The coldkey's hotkey fanout exceeds one claim's bound."
         return Call('SubtensorModule', 'claim_root', {'subnets': subnets})
 
     @staticmethod
@@ -1111,6 +1111,11 @@ class AdminUtils:
     def sudo_set_min_non_immune_uids(netuid: 'NetUid', min: 'u16') -> Call:
         'Sets the minimum number of non-immortal & non-immune UIDs that must remain in a subnet'
         return Call('AdminUtils', 'sudo_set_min_non_immune_uids', {'netuid': netuid, 'min': min})
+
+    @staticmethod
+    def sudo_set_min_trade_delay(delay: 'u64') -> Call:
+        'Sets the number of blocks after subnet-start during which staking is blocked (#2844).'
+        return Call('AdminUtils', 'sudo_set_min_trade_delay', {'delay': delay})
 
     @staticmethod
     def sudo_set_net_tao_flow_enabled(enabled: 'bool') -> Call:
